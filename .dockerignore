@@ -1,0 +1,30 @@
+# 依赖与本地状态。
+# ⚠️ node_modules 绝不能进镜像：workerd 是按平台分发的二进制，开发机上是
+# @cloudflare/workerd-windows-64，拷进 Linux 镜像会直接起不来 —— 镜像内必须重新安装。
+node_modules
+.npm
+
+# 构建产物：builder 阶段会重新构建，避免把 Windows 上构建的产物带进 Linux 镜像
+dist
+.next
+.vinext
+.wrangler
+
+# 仓库与本地工作区杂物
+.git
+.sites-runtime
+.agents
+.codex
+.workbuddy
+outputs
+work
+.tmp-split
+.tmp-*
+
+# 本地私有配置与密钥（容器内由持久卷上的配置替代，密钥通过环境变量注入）
+local.config.json
+.env
+.env.*
+
+# 文档不进镜像
+*.md

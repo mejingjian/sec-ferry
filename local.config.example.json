@@ -1,0 +1,9 @@
+{
+  "configEncryptionKey": "自动生成，或填写至少 32 个字符的随机字符串",
+  "deliveryGatewayEndpoint": "http://127.0.0.1:8790",
+  "deliveryGatewayToken": "local-test-token",
+  "deliveryPublicBaseUrl": "http://127.0.0.1:8790",
+  "deliveryDefaultExpiryHours": "72",
+  "deliveryDefaultMaxDownloads": "5",
+  "quarantineRetentionDays": "7"
+}

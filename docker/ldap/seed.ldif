@@ -1,0 +1,96 @@
+# 测试用 LDAP 目录种子数据 —— 仅 docker compose --profile dev 时加载。
+#
+# ⚠️ 基准 DN 与 .env 里的 LDAP_DOMAIN 必须对应：本文件按 dc=example,dc=local 编写，
+#    若修改 LDAP_DOMAIN，请同步修改本文件中的所有 dn。
+# 用途：验证平台「LDAP 与权限」页的绑定、同步（用户名/组 → 部门）与「域账号 + 域密码」登录链路。
+# 测试密码统一为 Passw0rd!<uid>（如 zhangsan / Passw0rd!zhangsan），仅本地联调可用，生产必须对接真实 AD。
+# 生产环境请连接内网真实 AD，不要启用本服务。
+#
+# 绑定帐号（由 osixia/openldap 自动创建）：
+#   dn: cn=admin,dc=example,dc=local   密码取 .env 的 LDAP_ADMIN_PASSWORD
+# 平台侧填写示例：
+#   主机 ldap / 端口 389 / 关闭 LDAPS / 帐号 cn=admin,dc=example,dc=local
+#   Base DN dc=example,dc=local / 过滤器 (objectClass=person)
+#
+# 注意：memberOf 属性在 OpenLDAP 上需要 memberof 叠加模块（overlay）才会自动维护。
+# 本文件显式列出了组与成员关系，用于验证「组 → 部门」映射是否按预期工作；
+# 若需与 AD 完全一致的 memberOf 反查，请对接真实 AD 验证。
+
+dn: ou=people,dc=example,dc=local
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,dc=example,dc=local
+objectClass: organizationalUnit
+ou: groups
+
+dn: uid=zhangsan,ou=people,dc=example,dc=local
+objectClass: inetOrgPerson
+objectClass: posixAccount
+uid: zhangsan
+userPassword: Passw0rd!zhangsan
+cn: zhangsan
+sn: 张三
+displayName: 张三
+mail: zhangsan@example.local
+uidNumber: 10001
+gidNumber: 10001
+homeDirectory: /home/zhangsan
+
+
+dn: uid=lisi,ou=people,dc=example,dc=local
+objectClass: inetOrgPerson
+objectClass: posixAccount
+uid: lisi
+userPassword: Passw0rd!lisi
+cn: lisi
+sn: 李四
+displayName: 李四
+mail: lisi@example.local
+uidNumber: 10002
+gidNumber: 10002
+homeDirectory: /home/lisi
+
+
+dn: uid=wangwu,ou=people,dc=example,dc=local
+objectClass: inetOrgPerson
+objectClass: posixAccount
+uid: wangwu
+userPassword: Passw0rd!wangwu
+cn: wangwu
+sn: 王五
+displayName: 王五
+mail: wangwu@example.local
+uidNumber: 10003
+gidNumber: 10003
+homeDirectory: /home/wangwu
+
+
+dn: uid=zhaoliu,ou=people,dc=example,dc=local
+objectClass: inetOrgPerson
+objectClass: posixAccount
+uid: zhaoliu
+userPassword: Passw0rd!zhaoliu
+cn: zhaoliu
+sn: 赵六
+displayName: 赵六
+mail: zhaoliu@example.local
+uidNumber: 10004
+gidNumber: 10004
+homeDirectory: /home/zhaoliu
+
+dn: cn=研发部,ou=groups,dc=example,dc=local
+objectClass: groupOfNames
+cn: 研发部
+member: uid=zhangsan,ou=people,dc=example,dc=local
+member: uid=lisi,ou=people,dc=example,dc=local
+
+dn: cn=审批人,ou=groups,dc=example,dc=local
+objectClass: groupOfNames
+cn: 审批人
+member: uid=wangwu,ou=people,dc=example,dc=local
+
+dn: cn=审计员,ou=groups,dc=example,dc=local
+objectClass: groupOfNames
+cn: 审计员
+member: uid=zhaoliu,ou=people,dc=example,dc=local

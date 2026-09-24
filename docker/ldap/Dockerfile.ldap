@@ -1,0 +1,5 @@
+# 测试用 LDAP 镜像：在官方镜像基础上内置种子目录（seed.ldif）。
+# 不能用单文件 bind mount 挂进 custom/ 目录 —— 引导脚本会 sed -i 原地改写该文件，
+# 单文件挂载不支持 rename，容器会崩溃（Device or resource busy）。
+FROM osixia/openldap:1.5.0
+COPY ldap/seed.ldif /container/service/slapd/assets/config/bootstrap/ldif/custom/50-seed.ldif

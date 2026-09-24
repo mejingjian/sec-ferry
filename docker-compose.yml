@@ -1,0 +1,88 @@
+# 文件安全收发平台 —— 整套环境一条命令起起来。
+#
+#   cp .env.docker.example .env        # 填好密钥
+#   docker compose up -d --build       # 平台（单镜像单服务）
+#   docker compose --profile dev up -d # 额外带一个测试用 LDAP（生产连内网真实 AD，不要用）
+#
+# 数据全部落在命名卷里：D1 = 卷内 SQLite 文件，R2 = 卷内目录。
+# 因此「备份 = 备份卷」，「迁移 = 搬卷」，「排查 = 拿同一份卷在本地起一遍」。
+#
+# 0007 起为单平台站内收发：不再有交付网关与 DMZ 侧服务，
+# 平台仅在内网审批区可达，收件人（域账号）登录平台后下载。
+
+name: transfer-approval-platform
+
+services:
+  platform:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.platform
+    image: ${PLATFORM_IMAGE:-transfer-approval-platform}:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      PERSIST_DIR: /data/state
+      CONFIG_DIR: /data/config
+      SITES_RUNTIME_ROOT: /data/runtime
+      PORT: "8787"
+      # 会话签名 + LDAP 密码加密。上线后不可更换，否则所有会话失效、已存密码无法解密。
+      CONFIG_ENCRYPTION_KEY: ${CONFIG_ENCRYPTION_KEY:?请在 .env 中提供至少 32 位随机串}
+      QUARANTINE_RETENTION_DAYS: ${QUARANTINE_RETENTION_DAYS:-7}
+      # 配置后「本地管理员」兜底登录会自动禁用 —— 生产必须配置。
+      # 同时它也是「登录必须校验域密码」的开关：未配置 = 联调态，允许自声明邮箱登录。
+      PLATFORM_ADMIN_EMAILS: ${PLATFORM_ADMIN_EMAILS:-}
+      PLATFORM_APPROVER_EMAILS: ${PLATFORM_APPROVER_EMAILS:-}
+      PLATFORM_AUDITOR_EMAILS: ${PLATFORM_AUDITOR_EMAILS:-}
+      # 域账号登录：自声明登录开关（仅联调可 true）与失败锁定阈值
+      ALLOW_SELF_DECLARED_LOGIN: ${ALLOW_SELF_DECLARED_LOGIN:-false}
+      LOGIN_MAX_FAILURES: ${LOGIN_MAX_FAILURES:-5}
+      LOGIN_LOCK_MINUTES: ${LOGIN_LOCK_MINUTES:-15}
+    volumes:
+      - platform-data:/data
+    networks:
+      - approval-zone
+    ports:
+      # 默认只绑本机回环，避免误暴露；内网正式部署改成审批网段地址或前置反向代理
+      - "${PLATFORM_BIND:-127.0.0.1}:8787:8787"
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # ---------- 仅测试用：LDAP 目录 ----------
+  # 生产环境请连内网真实 AD，不要启用本服务。
+  # 种子目录（seed.ldif）直接打进镜像：引导脚本要 sed -i 原地改写它，
+  # 单文件 bind mount 不支持 rename，挂载方式会启动即崩。
+  ldap:
+    build:
+      context: ./docker
+      dockerfile: ldap/Dockerfile.ldap
+    image: ${LDAP_IMAGE:-transfer-ldap-seed:latest}
+    profiles: ["dev"]
+    restart: unless-stopped
+    environment:
+      LDAP_ORGANISATION: ${LDAP_ORGANISATION:-Example Corp}
+      LDAP_DOMAIN: ${LDAP_DOMAIN:-example.local}
+      LDAP_ADMIN_PASSWORD: ${LDAP_ADMIN_PASSWORD:-admin}
+      LDAP_CONFIG_PASSWORD: ${LDAP_CONFIG_PASSWORD:-config}
+      LDAP_TLS: "false"
+      LDAP_REMOVE_CONFIG_AFTER_SETUP: "false"
+    volumes:
+      - ldap-data:/var/lib/ldap
+      - ldap-config:/etc/ldap/slapd.d
+    networks:
+      - approval-zone
+    ports:
+      # 只在回环上暴露，方便本地用客户端查看；平台通过服务名 ldap 访问
+      - "${LDAP_BIND:-127.0.0.1}:389:389"
+
+networks:
+  # 内网审批区：平台与目录服务。平台不在此网段对外暴露未受控端口。
+  approval-zone:
+    driver: bridge
+
+volumes:
+  # 平台业务数据：D1（SQLite）+ R2（隔离区文件）+ 加密配置（含 CONFIG_ENCRYPTION_KEY）
+  platform-data:
+  ldap-data:
+  ldap-config:

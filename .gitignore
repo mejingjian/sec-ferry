@@ -1,0 +1,79 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/.vinext/
+/out/
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+
+# vercel
+.vercel
+
+# typescript
+next-env.d.ts
+/dist/
+/.wrangler/
+# Checkout-local execution profile and tool state; never publish them.
+/.sites-runtime/
+/.agents/
+/.codex/
+/outputs/
+/work/
+/local.config.json
+
+# Docker：运行时生成的配置与本地环境变量文件
+/.env
+/gateway/wrangler.local.json
+# 模板文件必须入库（上面的 .env* 通配会把它一起忽略掉）
+!.env.docker.example
+
+# 临时验证产物
+/.tmp-*/
+
+# 构建 / 工具缓存（可重建，勿入库）
+*.tsbuildinfo
+
+# 勿入库的一次性产物与本地备份
+/.backup/
+
+# ⚠️ 以下目录是构建必需源码，切勿加入忽略：
+#   /build/    —— vite.config.ts 引用 ./build/sites-vite-plugin
+#   /vendor/   —— app/globals.css @import ../vendor/shadcn-tailwind-*.css
+#   /.openai/  —— vite.config.ts 引用 ./.openai/hosting.json
+#   /examples/ —— 模板示例，业务未使用（2026-09-24 已移入隔离区）
+
+# 临时分析探针（下划线开头的一次性脚本/输出）
+/_probe*.tmp
+/_dirsize.tmp
+/_measure*.tmp
+/_final_report.tmp
+/_dead*.*
+/_cleanup*.*
+/_analyze*.mjs
+/_build_verify*.log
+/_npm_*.*

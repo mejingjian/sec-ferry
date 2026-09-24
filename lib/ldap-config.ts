@@ -1,0 +1,90 @@
+// LDAP 认证源的读取与解密：登录（bind 校验）与目录同步共用。
+//
+// 把「取配置行 → 校验完整性 → 解密密码 → 组装直连配置」收敛到一处，
+// 避免登录与同步各写一套解密逻辑（历史上两处口径不一致就会出「同步能用、登录不能用」）。
+
+import { env } from "cloudflare:workers";
+import { eq } from "drizzle-orm";
+import { getDb } from "@/db";
+import { integrationSettings } from "@/db/schema";
+import type { LdapDirectConfig } from "@/lib/ldap-client";
+
+export const LDAP_DEFAULT_TIMEOUT_MS = 10000;
+
+export type LdapSettingsRow = typeof integrationSettings.$inferSelect;
+
+export async function getLdapSettings(): Promise<LdapSettingsRow | null> {
+  const rows = await getDb().select().from(integrationSettings).where(eq(integrationSettings.id, "ldap")).limit(1);
+  return rows[0] ?? null;
+}
+
+/** AES-GCM（密钥 = SHA-256(CONFIG_ENCRYPTION_KEY)）解密配置里的密文 */
+export async function decryptSecret(encrypted: string): Promise<string> {
+  if (!env.CONFIG_ENCRYPTION_KEY) throw new Error("服务端加密密钥不可用");
+  const [ivHex, dataHex] = encrypted.split(".");
+  if (!ivHex || !dataHex) throw new Error("密文格式不正确");
+  const fromHex = (value: string) => new Uint8Array(value.match(/../g)!.map((part) => parseInt(part, 16)));
+  const raw = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(env.CONFIG_ENCRYPTION_KEY));
+  const key = await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
+  return new TextDecoder().decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromHex(ivHex) }, key, fromHex(dataHex)));
+}
+
+export function ldapPort(row: LdapSettingsRow): number {
+  return row.ldapPort || (row.ldapLdaps ? 636 : 389);
+}
+
+export function ldapChannelLabel(row: LdapSettingsRow): string {
+  return `${row.ldapLdaps ? "ldaps" : "ldap"}://${row.ldapHost}:${ldapPort(row)}`;
+}
+
+/** 表单里除密码外的必填项，返回缺失项名称（为空表示完整） */
+export function missingLdapFields(row: LdapSettingsRow): string[] {
+  const missing: string[] = [];
+  if (!row.ldapHost) missing.push("服务器地址");
+  if (!row.baseDn) missing.push("Base DN");
+  if (!row.bindDn) missing.push("绑定帐号");
+  if (!row.encryptedSecret) missing.push("绑定密码");
+  return missing;
+}
+
+export async function toDirectConfig(row: LdapSettingsRow, secret: string): Promise<LdapDirectConfig> {
+  return {
+    host: row.ldapHost!,
+    port: ldapPort(row),
+    ldaps: Boolean(row.ldapLdaps),
+    bindDn: row.bindDn!,
+    bindPassword: secret,
+    baseDn: row.baseDn!,
+    filter: row.ldapFilter || undefined,
+    timeoutMs: LDAP_DEFAULT_TIMEOUT_MS,
+  };
+}
+
+export type LdapReadiness =
+  | { status: "ready"; config: LdapDirectConfig; label: string }
+  | { status: "unconfigured"; reason: string }
+  | { status: "broken"; reason: string };
+
+/**
+ * 登录/同步前置检查：能不能用直连 LDAP，不能用时给出人话原因。
+ * - unconfigured：还没配过（联调态允许自声明登录）
+ * - broken：配了但不完整/密钥不可用（必须修配置，不能静默降级）
+ */
+export async function ldapReadiness(): Promise<LdapReadiness> {
+  let row: LdapSettingsRow | null;
+  try {
+    row = await getLdapSettings();
+  } catch (error) {
+    return { status: "broken", reason: `读取 LDAP 配置失败：${error instanceof Error ? error.message : String(error)}` };
+  }
+  if (!row || (!row.ldapHost && !row.ldapGatewayUrl)) return { status: "unconfigured", reason: "尚未配置 LDAP 认证源" };
+  if (!row.ldapHost) return { status: "broken", reason: "LDAP 认证源使用的是旧版网关地址，域账号登录需要直连（请填写服务器地址与端口）" };
+  const missing = missingLdapFields(row);
+  if (missing.length) return { status: "broken", reason: `LDAP 认证源缺少：${missing.join("、")}` };
+  try {
+    const secret = await decryptSecret(row.encryptedSecret!);
+    return { status: "ready", config: await toDirectConfig(row, secret), label: ldapChannelLabel(row) };
+  } catch {
+    return { status: "broken", reason: "LDAP 绑定密码无法解密（CONFIG_ENCRYPTION_KEY 是否被更换过？需重新保存一次密码）" };
+  }
+}

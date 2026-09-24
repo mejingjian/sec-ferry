@@ -1,0 +1,53 @@
+# syntax=docker/dockerfile:1
+# 审批平台镜像（多阶段构建）。
+# 运行时是 workerd（经 wrangler 启动）而不是 Node 服务器：应用通过 Worker 绑定读取
+# env.BUCKET / env.PLATFORM_ADMIN_EMAILS 等，只有 Worker 运行时会注入这些绑定。
+# 注：`vinext start` 不可用于本项目 —— 它启动的是 Node 服务器，不提供任何 D1/R2 绑定。
+
+# ---------- 构建阶段 ----------
+FROM node:22-bookworm-slim AS builder
+WORKDIR /app
+# sharp 是 miniflare 的可选依赖，避免在镜像里编译全局 libvips
+ENV SHARP_IGNORE_GLOBAL_LIBVIPS=1
+COPY package.json package-lock.json .npmrc ./
+# install:ci = node scripts/install-ci.mjs，需要先拷入 scripts（sites-env/execution-profile 为其依赖）
+COPY scripts ./scripts
+RUN npm run install:ci
+COPY . .
+RUN npm run build
+
+# ---------- 运行阶段 ----------
+FROM node:22-bookworm-slim AS runtime
+WORKDIR /app
+ENV NODE_ENV=production \
+    PORT=8787 \
+    PERSIST_DIR=/data/state \
+    CONFIG_DIR=/data/config \
+    SITES_RUNTIME_ROOT=/data/runtime
+
+# 应用产物不依赖 node_modules（dist/server/vinext-externals.json 为空，全部已打包进 dist），
+# 运行时只需要 wrangler —— 它自带 workerd，即真正的 Worker 运行时。
+# 版本从 package.json 读取，避免与 devDependencies 漂移。
+# ⚠️ 本阶段 NODE_ENV=production 会让 npm 隐式 omit=dev：对「已是 devDependency 的显式参数」
+#    npm 会静默跳过安装（wrangler 凭空消失），必须显式 --include=dev。
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/drizzle ./drizzle
+COPY --from=builder /app/scripts ./scripts
+COPY docker ./docker
+
+RUN npm install --include=dev --no-save --no-package-lock --no-audit --no-fund \
+      "wrangler@$(node -p "require('./package.json').devDependencies.wrangler")" \
+ && npm cache clean --force \
+ && mkdir -p /data \
+ && useradd --system --uid 10001 --create-home app \
+ && chown -R app:app /app /data
+
+USER app
+EXPOSE 8787
+
+# 探活：平台首页返回 200 即视为存活（未登录访问 /api/* 会 401，不适合做探针）
+HEALTHCHECK --interval=15s --timeout=5s --start-period=45s --retries=5 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||8787)+'/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+ENTRYPOINT ["/app/docker/entrypoint-platform.sh"]
