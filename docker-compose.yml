@@ -1,14 +1,16 @@
-# 文件安全收发平台 —— 整套环境一条命令起起来。
+# 文件安全收发平台 —— 一套环境一条命令起起来。
 #
-#   cp .env.docker.example .env        # 填好密钥
-#   docker compose up -d --build       # 平台（单镜像单服务）
+#   cp .env.docker.example .env        # 填好密钥（至少 CONFIG_ENCRYPTION_KEY）
+#   docker compose up -d --build       # 平台 + 备份 sidecar
 #   docker compose --profile dev up -d # 额外带一个测试用 LDAP（生产连内网真实 AD，不要用）
 #
-# 数据全部落在命名卷里：D1 = 卷内 SQLite 文件，R2 = 卷内目录。
-# 因此「备份 = 备份卷」，「迁移 = 搬卷」，「排查 = 拿同一份卷在本地起一遍」。
+# 数据按用途拆成三个卷，备份边界因此变得明确：
+#   platform-db      /data/db      —— SQLite 主库（含 WAL）
+#   platform-files   /data/files   —— 隔离区对象（按 objectKey 落盘）
+#   platform-backups /data/backups —— 备份产物；可改成宿主机目录或备份盘
 #
-# 0007 起为单平台站内收发：不再有交付网关与 DMZ 侧服务，
-# 平台仅在内网审批区可达，收件人（域账号）登录平台后下载。
+# 与重构前的差别：不再需要「启动时生成 wrangler.local.json」与「靠标记文件判断是否初始化」，
+# 迁移由 drizzle/ 目录清单驱动、幂等执行（见 db/migrations.mjs）。
 
 name: transfer-approval-platform
 
@@ -20,10 +22,10 @@ services:
     image: ${PLATFORM_IMAGE:-transfer-approval-platform}:${IMAGE_TAG:-latest}
     restart: unless-stopped
     environment:
-      PERSIST_DIR: /data/state
-      CONFIG_DIR: /data/config
-      SITES_RUNTIME_ROOT: /data/runtime
+      # 数据根目录：容器内固定为 /data，三个子目录由卷挂载
+      DATA_DIR: /data
       PORT: "8787"
+      HOSTNAME: "0.0.0.0"
       # 会话签名 + LDAP 密码加密。上线后不可更换，否则所有会话失效、已存密码无法解密。
       CONFIG_ENCRYPTION_KEY: ${CONFIG_ENCRYPTION_KEY:?请在 .env 中提供至少 32 位随机串}
       QUARANTINE_RETENTION_DAYS: ${QUARANTINE_RETENTION_DAYS:-7}
@@ -36,18 +38,65 @@ services:
       ALLOW_SELF_DECLARED_LOGIN: ${ALLOW_SELF_DECLARED_LOGIN:-false}
       LOGIN_MAX_FAILURES: ${LOGIN_MAX_FAILURES:-5}
       LOGIN_LOCK_MINUTES: ${LOGIN_LOCK_MINUTES:-15}
+      # 目录条目数超过 AD 单次上限（默认 1000）时才需要；0 表示关闭分页
+      LDAP_PAGE_SIZE: ${LDAP_PAGE_SIZE:-500}
+      # LDAPS 严格证书校验：自签名证书的内网 AD 保持 false
+      LDAP_TLS_REJECT_UNAUTHORIZED: ${LDAP_TLS_REJECT_UNAUTHORIZED:-false}
     volumes:
-      - platform-data:/data
+      - platform-db:/data/db
+      - platform-files:/data/files
+      - platform-backups:/data/backups
     networks:
       - approval-zone
     ports:
       # 默认只绑本机回环，避免误暴露；内网正式部署改成审批网段地址或前置反向代理
       - "${PLATFORM_BIND:-127.0.0.1}:8787:8787"
+    # 等 LDAP 就绪只在 dev profile 下有意义；required:false 让不带 profile 时也能正常起
+    depends_on:
+      ldap:
+        condition: service_started
+        required: false
     logging:
       driver: json-file
       options:
         max-size: "20m"
         max-file: "5"
+
+  # ---------- 备份 sidecar ----------
+  # 复用平台镜像（同一份 backup.mjs），周期性做 SQLite 在线热备 + 文件增量镜像。
+  # 之所以用独立容器而不是让平台自己定时：备份失败不应影响业务进程，且备份脚本的
+  # 资源占用（大目录遍历）与业务隔离更安全。
+  backup:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.platform
+    image: ${PLATFORM_IMAGE:-transfer-approval-platform}:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      DATA_DIR: /data
+      # 备份周期（秒）。默认 24 小时；数据库备份保留份数由 BACKUP_KEEP 控制。
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
+    volumes:
+      - platform-db:/data/db:ro
+      - platform-files:/data/files:ro
+      - platform-backups:/data/backups
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        interval="$${BACKUP_INTERVAL_SECONDS:-86400}"
+        echo "[backup] 启动：每 $${interval}s 备份一次，数据库保留 $${BACKUP_KEEP:-14} 份"
+        while true; do
+          node scripts/backup.mjs --keep "$${BACKUP_KEEP:-14}" || echo "[backup] 本次备份失败，等待下一轮"
+          sleep "$${interval}"
+        done
+    # 该容器不提供 HTTP 服务，禁用镜像里继承的 /healthz 探针
+    healthcheck:
+      disable: true
+    networks:
+      - approval-zone
 
   # ---------- 仅测试用：LDAP 目录 ----------
   # 生产环境请连内网真实 AD，不要启用本服务。
@@ -75,6 +124,12 @@ services:
     ports:
       # 只在回环上暴露，方便本地用客户端查看；平台通过服务名 ldap 访问
       - "${LDAP_BIND:-127.0.0.1}:389:389"
+    healthcheck:
+      test: ["CMD-SHELL", "ldapsearch -x -H ldap://127.0.0.1:389 -s base -b '' '(objectClass=*)' namingContexts >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
 
 networks:
   # 内网审批区：平台与目录服务。平台不在此网段对外暴露未受控端口。
@@ -82,7 +137,9 @@ networks:
     driver: bridge
 
 volumes:
-  # 平台业务数据：D1（SQLite）+ R2（隔离区文件）+ 加密配置（含 CONFIG_ENCRYPTION_KEY）
-  platform-data:
+  # 平台业务数据，按用途拆分（备份策略明确，而不是「打包整个卷」）
+  platform-db:
+  platform-files:
+  platform-backups:
   ldap-data:
   ldap-config:

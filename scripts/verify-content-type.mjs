@@ -122,11 +122,19 @@ async function main() {
     const config = await request("/api/admin/config", { cookie: adminCookie });
     originalConfig = config.json?.ldap || null;
     originalGuard = config.json?.ldap?.contentTypeGuard || "normal";
+    // 全新实例上库里还没有服务帐号口令：mock 目录不校验服务帐号密码，
+    // 但平台侧「认证源缺 bindPassword」会直接拒绝域账号登录，所以这时要写一个占位口令。
+    const needsPlaceholderSecret = originalConfig?.secretConfigured !== true;
     const put = await request("/api/admin/config", {
       method: "PUT",
       cookie: adminCookie,
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ldapName: "Mock_LDAP", ldapHost: MOCK_HOST, ldapPort: MOCK_PORT, ldapLdaps: false, baseDn: MOCK_BASE_DN, bindDn: MOCK_BIND_DN, ldapFilter: "(objectClass=person)", syncIntervalMinutes: 30 }),
+      // 已有口令时不提交 secret：沿用已存储口令，避免覆盖真实 AD 的绑定密码
+      body: JSON.stringify({
+        ldapName: "Mock_LDAP", ldapHost: MOCK_HOST, ldapPort: MOCK_PORT, ldapLdaps: false,
+        baseDn: MOCK_BASE_DN, bindDn: MOCK_BIND_DN, ldapFilter: "(objectClass=person)", syncIntervalMinutes: 30,
+        ...(needsPlaceholderSecret ? { secret: "mock-ldap-placeholder" } : {}),
+      }),
     });
     record(put.status === 200, `认证源切到 mock LDAP ${MOCK_HOST}:${MOCK_PORT}`, `HTTP ${put.status} ${put.json?.error || ""}`);
     const adminEmail = ADMIN.includes("@") ? ADMIN : `${ADMIN}@example.local`;

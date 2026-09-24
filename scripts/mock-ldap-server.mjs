@@ -216,7 +216,9 @@ function handleConnection(socket) {
         while (true) {
           const field = readTlv(op.content, offset);
           if (!field) break;
-          if ([0xa0, 0xa1, 0xa2, 0xa3, 0x87, 0xa5, 0xa6, 0xa8].includes(field.tag)) filter = field;
+          // 只认第一个匹配的元素：SearchRequest 末尾的 controls 字段（分页控制）与 AND 过滤器同为 tag 0xa0，
+          // 若反复覆盖，带 controls 的请求会把控制报文当成过滤器求值，结果恒为空。
+          if (filter === null && [0xa0, 0xa1, 0xa2, 0xa3, 0x87, 0xa5, 0xa6, 0xa8].includes(field.tag)) filter = field;
           if (field.tag === 0x30) {
             const requested = [];
             let attrOffset = 0;

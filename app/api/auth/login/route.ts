@@ -1,4 +1,4 @@
-import { env } from "cloudflare:workers";
+import { env } from "@/lib/env";
 import { getDb } from "@/db";
 import { ldapUsers } from "@/db/schema";
 import { LdapBindError, LdapError, ldapAuthenticate } from "@/lib/ldap-client";

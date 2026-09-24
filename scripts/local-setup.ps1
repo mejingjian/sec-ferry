@@ -1,81 +1,30 @@
 ﻿$ErrorActionPreference = "Stop"
+# 控制台统一 UTF-8，避免中文提示在 PowerShell 5.1 下显示为乱码
+try { [Console]::OutputEncoding = [Console]::InputEncoding = [System.Text.Encoding]::UTF8 } catch {}
+$OutputEncoding = [System.Text.Encoding]::UTF8
+$env:FORCE_COLOR = "0" 2>$null
+
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $ProjectRoot
 
 $NodeMajor = [int]((node --version).TrimStart('v').Split('.')[0])
-if ($NodeMajor -lt 22) { throw "Node.js 22 or newer is required." }
+if ($NodeMajor -lt 22) { throw "需要 Node.js 22 或更高版本（本项目使用 Node 内置的 node:sqlite，无需原生模块编译）。" }
 
-if (-not (Test-Path "node_modules")) { npm run install:ci }
-npm run build
-node ./scripts/prepare-local-config.mjs
-
-$Marker = ".transfer-platform-schema-v9"
-$MarkerV8 = ".transfer-platform-schema-v8"
-$MarkerV7 = ".transfer-platform-schema-v7"
-$MarkerV6 = ".transfer-platform-schema-v6"
-$MarkerV5 = ".transfer-platform-schema-v5"
-$MarkerV4 = ".transfer-platform-schema-v4"
-$MarkerV3 = ".transfer-platform-schema-v3"
-$MarkerV2 = ".transfer-platform-schema-v2"
-# 持久化目录放在系统 TEMP 下，避免项目超长路径（Roaming/Marvis/workspace/conv_xxx）触发 Windows MAX_PATH 导致 SQLite 打不开
-$PersistRoot = Join-Path $env:TEMP "transfer-platform-state"
-if (-not (Test-Path (Join-Path $PersistRoot $Marker))) {
-  New-Item -ItemType Directory -Force $PersistRoot | Out-Null
-  $WranglerArgs = @("d1", "execute", "site-creator-d1", "--local", "--persist-to", $PersistRoot, "--config", "dist/server/wrangler.local.json")
-  if (Test-Path (Join-Path $PersistRoot $MarkerV8)) {
-    # v8 库（0000-0008）：仅增量应用 0009（内容防伪装 + 归档下线）
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0009_content_guard.sql
-  } elseif (Test-Path (Join-Path $PersistRoot $MarkerV7)) {
-    # v7 库（0000-0007）：仅增量应用 0008（域账号 LDAP 登录）+ 0009
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0008_ldap_login.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0009_content_guard.sql
-  } elseif (Test-Path (Join-Path $PersistRoot $MarkerV6)) {
-    # 已按 v6 初始化过 0000-0006 的库：仅增量应用 0007（单平台收发改造）+ 0008（LDAP 登录）
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0007_unified_transfer.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0008_ldap_login.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0009_content_guard.sql
-  } elseif (Test-Path (Join-Path $PersistRoot $MarkerV5)) {
-    # 已按 v5 初始化过 0000-0003 + 0005 的库：仅增量应用 0006（LDAP 搜索过滤器）+ 0007
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0006_ldap_filter.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0007_unified_transfer.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0008_ldap_login.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0009_content_guard.sql
-  } elseif (Test-Path (Join-Path $PersistRoot $MarkerV4)) {
-    # 已按 v4 初始化过 0000-0003 的库：仅增量应用 0005（LDAP 直连字段）+ 0006 + 0007
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0005_ldap_direct.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0006_ldap_filter.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0007_unified_transfer.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0008_ldap_login.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0009_content_guard.sql
-  } elseif (Test-Path (Join-Path $PersistRoot $MarkerV3)) {
-    # 已按 v3 初始化过 0000/0001/0002 的库：仅增量应用 0003 + 0005 + 0006 + 0007
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0003_delivery_gateway.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0005_ldap_direct.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0006_ldap_filter.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0007_unified_transfer.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0008_ldap_login.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0009_content_guard.sql
-  } elseif (Test-Path $MarkerV2) {
-    # 已按旧版初始化过 0000/0001 的库：增量应用 0002 + 0003 + 0005 + 0006 + 0007
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0002_transfer_platform_enhance.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0003_delivery_gateway.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0005_ldap_direct.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0006_ldap_filter.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0007_unified_transfer.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0008_ldap_login.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0009_content_guard.sql
-  } else {
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0000_noisy_human_cannonball.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0001_cloudy_raider.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0002_transfer_platform_enhance.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0003_delivery_gateway.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0005_ldap_direct.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0006_ldap_filter.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0007_unified_transfer.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0008_ldap_login.sql
-    node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js $WranglerArgs --file drizzle/0009_content_guard.sql
-  }
-  New-Item -ItemType File -Force (Join-Path $PersistRoot $Marker) | Out-Null
+if (-not (Test-Path "node_modules")) {
+  Write-Host "正在安装依赖（首次运行）…" -ForegroundColor Yellow
+  npm install
 }
 
-Write-Host "Setup complete. Next: npm run local:start" -ForegroundColor Green
+# 数据目录固定在项目内，便于整体备份与搬迁（容器内则为 /data 卷）
+if (-not $env:DATA_DIR) { $env:DATA_DIR = Join-Path $ProjectRoot ".local-data" }
+# 生产模式下 Next 的 server.js 不会自己加载 .env（只有 `next dev` 会加载），显式喂进去。
+# 已有真实环境变量优先级更高；--env-file-if-exists 在文件不存在时静默跳过（容器里就是这种情况）。
+$EnvFile = Join-Path $ProjectRoot ".env"
+
+Write-Host "初始化数据库（幂等执行 drizzle/*.sql）…" -ForegroundColor Cyan
+node "--env-file-if-exists=$EnvFile" ./scripts/migrate.mjs
+if ($LASTEXITCODE -ne 0) { throw "数据库初始化失败" }
+
+Write-Host ""
+Write-Host "初始化完成，数据目录：$env:DATA_DIR" -ForegroundColor Green
+Write-Host "下一步：npm run local:start" -ForegroundColor Green

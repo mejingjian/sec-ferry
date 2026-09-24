@@ -1,53 +1,58 @@
 # syntax=docker/dockerfile:1
-# 审批平台镜像（多阶段构建）。
-# 运行时是 workerd（经 wrangler 启动）而不是 Node 服务器：应用通过 Worker 绑定读取
-# env.BUCKET / env.PLATFORM_ADMIN_EMAILS 等，只有 Worker 运行时会注入这些绑定。
-# 注：`vinext start` 不可用于本项目 —— 它启动的是 Node 服务器，不提供任何 D1/R2 绑定。
+# 审批平台镜像（三阶段：依赖 → 构建 → 运行）。
+#
+# 与重构前的关键差别：
+#   旧：运行时是 workerd（靠 wrangler dev 拉起 dist），运行阶段还要 `npm install --include=dev wrangler`，
+#       并在容器启动时生成 wrangler.local.json。原因是应用通过 Worker 绑定读环境。
+#   新：标准 Node 服务器（Next standalone 的 server.js），运行阶段只 COPY 产物、不装任何包；
+#       环境变量全部走 process.env；启动时不再生成任何配置文件。镜像因此小得多、启动快得多。
+#
+# 数据全部落在 /data 卷：/data/db/platform.db（SQLite）+ /data/files（隔离区对象）+ /data/backups。
 
-# ---------- 构建阶段 ----------
+# ---------- 1) 依赖阶段：只装依赖，源码变更不会让这层失效 ----------
+FROM node:22-bookworm-slim AS deps
+WORKDIR /app
+COPY package.json package-lock.json .npmrc ./
+RUN npm ci --no-audit --no-fund
+
+# ---------- 2) 构建阶段 ----------
 FROM node:22-bookworm-slim AS builder
 WORKDIR /app
-# sharp 是 miniflare 的可选依赖，避免在镜像里编译全局 libvips
-ENV SHARP_IGNORE_GLOBAL_LIBVIPS=1
-COPY package.json package-lock.json .npmrc ./
-# install:ci = node scripts/install-ci.mjs，需要先拷入 scripts（sites-env/execution-profile 为其依赖）
-COPY scripts ./scripts
-RUN npm run install:ci
+ENV NEXT_TELEMETRY_DISABLED=1
+COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+# next build + scripts/assemble-standalone.mjs（把 static/public/drizzle 放进 standalone 目录）
 RUN npm run build
 
-# ---------- 运行阶段 ----------
+# ---------- 3) 运行阶段：只放产物，没有任何安装步骤 ----------
 FROM node:22-bookworm-slim AS runtime
 WORKDIR /app
+
 ENV NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
     PORT=8787 \
-    PERSIST_DIR=/data/state \
-    CONFIG_DIR=/data/config \
-    SITES_RUNTIME_ROOT=/data/runtime
+    HOSTNAME=0.0.0.0 \
+    DATA_DIR=/data
 
-# 应用产物不依赖 node_modules（dist/server/vinext-externals.json 为空，全部已打包进 dist），
-# 运行时只需要 wrangler —— 它自带 workerd，即真正的 Worker 运行时。
-# 版本从 package.json 读取，避免与 devDependencies 漂移。
-# ⚠️ 本阶段 NODE_ENV=production 会让 npm 隐式 omit=dev：对「已是 devDependency 的显式参数」
-#    npm 会静默跳过安装（wrangler 凭空消失），必须显式 --include=dev。
+# standalone 产物已包含最小 node_modules、server.js、.next/static、public 与 drizzle
+COPY --from=builder /app/.next/standalone ./
+# 迁移 CLI：让「启动前迁移」能 fail-fast（应用内也会惰性迁移，两者共用 db/*.mjs 同一份逻辑）
+COPY --from=builder /app/db/migrations.mjs /app/db/sqlite-client.mjs ./db/
+COPY --from=builder /app/scripts/migrate.mjs /app/scripts/backup.mjs ./scripts/
+# 备份脚本要能在容器里独立执行（backup sidecar 复用同一镜像）
 COPY --from=builder /app/package.json ./package.json
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/drizzle ./drizzle
-COPY --from=builder /app/scripts ./scripts
-COPY docker ./docker
 
-RUN npm install --include=dev --no-save --no-package-lock --no-audit --no-fund \
-      "wrangler@$(node -p "require('./package.json').devDependencies.wrangler")" \
- && npm cache clean --force \
- && mkdir -p /data \
+COPY docker/entrypoint-platform.sh /usr/local/bin/entrypoint-platform.sh
+RUN chmod +x /usr/local/bin/entrypoint-platform.sh \
+ && mkdir -p /data/db /data/files /data/backups \
  && useradd --system --uid 10001 --create-home app \
  && chown -R app:app /app /data
 
 USER app
 EXPOSE 8787
 
-# 探活：平台首页返回 200 即视为存活（未登录访问 /api/* 会 401，不适合做探针）
-HEALTHCHECK --interval=15s --timeout=5s --start-period=45s --retries=5 \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||8787)+'/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+# 存活探针：只问「进程还能响应 HTTP 吗」，不查数据库（避免依赖抖动引发重启风暴）
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||8787)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-ENTRYPOINT ["/app/docker/entrypoint-platform.sh"]
+ENTRYPOINT ["/usr/local/bin/entrypoint-platform.sh"]

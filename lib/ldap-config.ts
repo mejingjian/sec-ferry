@@ -3,13 +3,27 @@
 // 把「取配置行 → 校验完整性 → 解密密码 → 组装直连配置」收敛到一处，
 // 避免登录与同步各写一套解密逻辑（历史上两处口径不一致就会出「同步能用、登录不能用」）。
 
-import { env } from "cloudflare:workers";
+import { env } from "@/lib/env";
 import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { integrationSettings } from "@/db/schema";
 import type { LdapDirectConfig } from "@/lib/ldap-client";
 
 export const LDAP_DEFAULT_TIMEOUT_MS = 10000;
+
+// 分页搜索每页条目数。AD 对单次搜索有 MaxPageSize（默认 1000）限制，超出会直接返回
+// sizeLimitExceeded 且不返回任何条目 —— 目录大的单位必须开分页，否则同步结果为空。
+// LDAP_PAGE_SIZE=0 可关闭（此时完全依赖目录自身限制）。
+export const LDAP_DEFAULT_PAGE_SIZE = 500;
+
+function ldapPageSize(): number {
+  const raw = env.LDAP_PAGE_SIZE;
+  if (raw === undefined) return LDAP_DEFAULT_PAGE_SIZE;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : LDAP_DEFAULT_PAGE_SIZE;
+}
+
+
 
 export type LdapSettingsRow = typeof integrationSettings.$inferSelect;
 
@@ -57,6 +71,7 @@ export async function toDirectConfig(row: LdapSettingsRow, secret: string): Prom
     baseDn: row.baseDn!,
     filter: row.ldapFilter || undefined,
     timeoutMs: LDAP_DEFAULT_TIMEOUT_MS,
+    pageSize: ldapPageSize(),
   };
 }
 

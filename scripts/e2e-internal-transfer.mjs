@@ -34,6 +34,9 @@ const MOCK_HOST = argValue("mock-host", "127.0.0.1");
 const MOCK_PORT = Number(argValue("mock-port", "3890"));
 const MOCK_BASE_DN = argValue("mock-base-dn", "dc=example,dc=local");
 const MOCK_BIND_DN = `cn=admin,${MOCK_BASE_DN}`;
+// 全新实例上库里还没有服务帐号口令时用这个占位值（mock 目录不校验服务帐号密码）。
+// 不是真实凭据，只为了让「认证源完整」这一校验通过。
+const MOCK_PLACEHOLDER_SECRET = "mock-ldap-placeholder";
 const SIZE = Number(argValue("size", String(300 * 1024)));
 // 后缀默认取 "e2e"：通常不落在任何规则的后缀白名单里 → 命中兜底规则「转人工审批」，
 // 从而覆盖「未命中自动通过规则 → 转人工审批」这条主路径（命中自动通过时脚本会自动跳过大半用例并说明）。
@@ -111,12 +114,20 @@ async function main() {
     }
     adminCookie = fallback.cookie;
     originalConfig = (await request("/api/admin/config", { cookie: adminCookie })).json?.ldap || null;
+    // 库里还没存过服务帐号口令时（全新实例第一次跑），必须提交一个占位口令：
+    // mock 目录不校验服务帐号密码，但平台侧「认证源缺 bindPassword」会直接拒绝域账号登录。
+    const needsPlaceholderSecret = originalConfig?.secretConfigured !== true;
+    if (needsPlaceholderSecret) console.log("    （库中尚无 LDAP 绑定密码，本次写入 mock 占位口令）");
     const put = await request("/api/admin/config", {
       method: "PUT",
       cookie: adminCookie,
       headers: { "content-type": "application/json" },
-      // 不提交 secret：沿用已存储的服务帐号口令（mock 服务帐号接受任意非空口令）
-      body: JSON.stringify({ ldapName: "Mock_LDAP", ldapHost: MOCK_HOST, ldapPort: MOCK_PORT, ldapLdaps: false, baseDn: MOCK_BASE_DN, bindDn: MOCK_BIND_DN, ldapFilter: "(objectClass=person)", syncIntervalMinutes: 30 }),
+      // 已有口令时不提交 secret：沿用已存储的服务帐号口令（避免覆盖真实 AD 的绑定密码）
+      body: JSON.stringify({
+        ldapName: "Mock_LDAP", ldapHost: MOCK_HOST, ldapPort: MOCK_PORT, ldapLdaps: false,
+        baseDn: MOCK_BASE_DN, bindDn: MOCK_BIND_DN, ldapFilter: "(objectClass=person)", syncIntervalMinutes: 30,
+        ...(needsPlaceholderSecret ? { secret: MOCK_PLACEHOLDER_SECRET } : {}),
+      }),
     });
     record(put.status === 200, `认证源切到 mock LDAP ${MOCK_HOST}:${MOCK_PORT}`, `HTTP ${put.status} ${put.json?.error || ""}`);
     if (DO_SYNC) {

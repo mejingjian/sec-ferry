@@ -1,12 +1,12 @@
 // 登录失败计数与锁定：防域账号在线爆破。
 //
-// 计数落在 D1（而不是内存）是硬要求：workerd 实例会随负载/发布重建，内存计数等于没有防护。
+// 计数落在 SQLite（而不是内存）是硬要求：进程重启 / 容器滚动更新的内存计数等于没有防护。
 // 标识（identifier）= 小写的域账号或邮箱，与来源 IP 一并留痕，便于事后审计「谁在扫账号」。
 //
 // 阈值默认 5 次 / 锁 15 分钟，可用环境变量覆盖：
 //   LOGIN_MAX_FAILURES=5   LOGIN_LOCK_MINUTES=15
 
-import { env } from "cloudflare:workers";
+import { env } from "@/lib/env";
 import { desc, eq, isNotNull } from "drizzle-orm";
 import { getDb } from "@/db";
 import { loginAttempts } from "@/db/schema";

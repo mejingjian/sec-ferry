@@ -1,8 +1,9 @@
-import { env } from "cloudflare:workers";
+import { env } from "@/lib/env";
 import { and, desc, eq, isNotNull, lt, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { applications, applicationRecipients, auditEvents, downloadDeliveries, downloadEvents, roleAssignments, rules } from "@/db/schema";
 import { readSession } from "@/lib/session";
+import { createFileBucket, type FileBucket } from "@/lib/storage";
 
 export type Actor = { id: string; email: string | null; display: string };
 
@@ -210,9 +211,13 @@ export function canApprove(applicationApprovers: string | null, actorEmail: stri
   return assigned.length > 0 && assigned.includes(actorEmail.toLowerCase());
 }
 
-export function storage() {
-  if (!env.BUCKET) throw new Error("文件存储尚未绑定，请在站点配置中启用 R2 BUCKET。");
-  return env.BUCKET;
+// 文件存储唯一入口：本地文件系统实现（接口形态对齐 R2，便于将来换回对象存储）。
+// 单例，避免每次下载都重建桶对象。
+const globalRef = globalThis as unknown as { __transferPlatformBucket?: FileBucket };
+
+export function storage(): FileBucket {
+  if (!globalRef.__transferPlatformBucket) globalRef.__transferPlatformBucket = createFileBucket();
+  return globalRef.__transferPlatformBucket;
 }
 
 // ---------- 站内送达闭环：状态机 ----------

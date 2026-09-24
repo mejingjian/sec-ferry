@@ -1,6 +1,24 @@
-// Redmine 风格直连 LDAP 客户端（Workers 环境通过 cloudflare:sockets 出站 TCP）。
-// 仅实现用户同步所需的最小 LDAP v3 协议子集：simple bind → subtree search → unbind。
-// 支持 ldap://（389 明文）与 ldaps://（636 TLS）。参考 RFC 4511。
+// LDAP 直连客户端：基于 `ldapts`（成熟第三方实现），替代原先手写的 300 余行 BER 编解码。
+//
+// 为什么换：旧实现用 `cloudflare:sockets` 手工拼 LDAP v3 报文，只覆盖 simple bind +
+// subtree search。这类代码没有现成的测试与超时语义，出问题只能靠抓包 —— 历史上
+// `typesOnly` 标志位写错（0xff 而非 0x00）导致 openldap 只回属性名、值全空，
+// 而 mock 目录忽略该标志，所以本地一直没暴露。换成库以后这类协议级错误由上游负责。
+//
+// 保留的对外契约（上层零改动）：
+//   LdapDirectConfig / LdapEntry / LDAP_USER_ATTRIBUTES
+//   LdapError / LdapBindError / describeBindFailure
+//   openLdapSession / ldapSearchUsers / ldapAuthenticate
+//   escapeLdapFilterValue / buildUserLookupFilter
+//
+// 行为要点（与旧实现刻意保持一致）：
+//   1. 两步登录：服务帐号搜索出用户 DN → 用「用户 DN + 用户密码」重新建连 bind；
+//      搜不到且输入不像 DN 时直接判失败（不区分「无此账号」与「密码错」，防账号枚举）。
+//   2. 服务帐号自身配错（密码过期/被禁用）必须原样抛给管理员，不被兜底路径掩盖。
+//   3. 搜索请求必须请求属性值（returnAttributeValues: true），否则会重演上面那个 bug。
+
+import { Client, type ClientOptions, type Entry, type SearchOptions } from "ldapts";
+import { env } from "@/lib/env";
 
 export type LdapDirectConfig = {
   host: string;
@@ -11,6 +29,8 @@ export type LdapDirectConfig = {
   baseDn: string;
   filter?: string;
   timeoutMs?: number;
+  /** 每页条目数；>0 时启用 RFC 2696 分页搜索（AD 默认单次最多返回 1000 条，目录越大越需要） */
+  pageSize?: number;
 };
 
 export type LdapEntry = { dn: string; attributes: Record<string, string[]> };
@@ -42,215 +62,6 @@ export function describeBindFailure(code: number, diagnostic?: string): string {
   return "请检查「帐号」与「密码」";
 }
 
-
-// ---------- BER 编码 ----------
-
-const encoder = new TextEncoder();
-
-function bytes(...parts: Array<Uint8Array>): Uint8Array {
-  const length = parts.reduce((sum, part) => sum + part.length, 0);
-  const out = new Uint8Array(length);
-  let offset = 0;
-  for (const part of parts) { out.set(part, offset); offset += part.length; }
-  return out;
-}
-
-function berLengthBytes(length: number): Uint8Array {
-  if (length < 0x80) return new Uint8Array([length]);
-  const content: number[] = [];
-  let rest = length;
-  while (rest > 0) { content.unshift(rest & 0xff); rest = Math.floor(rest / 256); }
-  return new Uint8Array([0x80 | content.length, ...content]);
-}
-
-function tlv(tag: number, content: Uint8Array): Uint8Array {
-  return bytes(new Uint8Array([tag]), berLengthBytes(content.length), content);
-}
-
-function berIntegerContent(value: number): Uint8Array {
-  if (value === 0) return new Uint8Array([0]);
-  const content: number[] = [];
-  let rest = value;
-  while (rest > 0) { content.unshift(rest & 0xff); rest = Math.floor(rest / 256); }
-  return new Uint8Array(content);
-}
-
-const berInteger = (value: number) => tlv(0x02, berIntegerContent(value));
-const berString = (text: string) => tlv(0x04, encoder.encode(text));
-const berEnumerated = (value: number) => tlv(0x0a, berIntegerContent(value));
-
-// LDAP 消息 ID 由会话内自增计数器分配（见 openLdapSession），不再使用固定 ID
-
-function buildBindRequest(bindDn: string, password: string): Uint8Array {
-  // BindRequest ::= [APPLICATION 0] SEQUENCE { version INTEGER 3, name LDAPDN, simple [0] password }
-  const version = new Uint8Array([0x02, 0x01, 0x03]);
-  const simpleAuth = tlv(0x80, encoder.encode(password));
-  return tlv(0x60, bytes(version, berString(bindDn), simpleAuth));
-}
-
-// ---------- 搜索过滤器编译（RFC 4515 子集 → BER） ----------
-
-// 支持语法：(attr=*) 存在性、(attr=value) 相等、(attr>=v)/(attr<=v)/(attr~=v)、(&(...)(...))、(|(...))、(!(..))
-function compileLdapFilter(filter: string): Uint8Array {
-  let pos = 0;
-  const fail = (why: string): never => { throw new LdapError(`LDAP 过滤器语法错误（位置 ${pos}）：${why}`); };
-  const parseFilter = (): Uint8Array => {
-    if (filter[pos] !== "(") fail(`应以 "(" 开始`);
-    pos += 1;
-    const op = filter[pos];
-    let result: Uint8Array;
-    if (op === "&" || op === "|") {
-      pos += 1;
-      const parts: Uint8Array[] = [];
-      while (filter[pos] === "(") parts.push(parseFilter());
-      if (!parts.length) fail(`(&...) 或 (|...) 至少需要一个条件`);
-      if (filter[pos] !== ")") fail(`缺少闭合 ")"`);
-      pos += 1;
-      result = tlv(op === "&" ? 0xa0 : 0xa1, bytes(...parts));
-    } else if (op === "!") {
-      pos += 1;
-      const inner = parseFilter();
-      if (filter[pos] !== ")") fail(`缺少闭合 ")"`);
-      pos += 1;
-      result = tlv(0xa2, inner);
-    } else {
-      const attrStart = pos;
-      while (pos < filter.length && !"=<>~)".includes(filter[pos])) pos += 1;
-      const attr = filter.slice(attrStart, pos).trim();
-      if (!attr || attr.includes("(")) fail(`属性名不合法`);
-      let tag = 0xa3;
-      if (filter[pos] === ">" && filter[pos + 1] === "=") { tag = 0xa5; pos += 2; }
-      else if (filter[pos] === "<" && filter[pos + 1] === "=") { tag = 0xa6; pos += 2; }
-      else if (filter[pos] === "~" && filter[pos + 1] === "=") { tag = 0xa8; pos += 2; }
-      else if (filter[pos] !== "=") fail(`缺少 "=value" 比较`);
-      else pos += 1;
-      const close = filter.indexOf(")", pos);
-      if (close === -1) fail(`缺少闭合 ")"`);
-      const value = filter.slice(pos, close).trim();
-      pos = close + 1;
-      if (tag === 0xa3 && value === "*") result = tlv(0x87, encoder.encode(attr)); // 存在性
-      else result = tlv(tag, bytes(berString(attr), berString(value)));
-    }
-    return result;
-  };
-  const compiled = parseFilter();
-  if (pos !== filter.trim().length) fail(`过滤器末尾有多余内容`);
-  return compiled;
-}
-
-const DEFAULT_SEARCH_FILTER = "(objectClass=person)";
-
-function buildSearchRequest(baseDn: string, attributes: string[], filter?: string): Uint8Array {
-  // SearchRequest ::= [APPLICATION 3] SEQUENCE { baseObject, scope(sub=2), deref(never=0),
-  //   sizeLimit 0, timeLimit 10, typesOnly false, filter, attributes }
-  let searchFilter: Uint8Array;
-  try {
-    searchFilter = filter?.trim() ? compileLdapFilter(filter.trim()) : compileLdapFilter(DEFAULT_SEARCH_FILTER);
-  } catch (error) {
-    throw error instanceof LdapError ? new LdapError(`${error.message}（过滤器原文：${filter}）`) : error;
-  }
-  const attrSelection = tlv(0x30, bytes(...attributes.map((name) => berString(name))));
-  return tlv(0x63, bytes(
-    berString(baseDn),
-    berEnumerated(2),
-    berEnumerated(0),
-    berInteger(0),
-    berInteger(10),
-    // typesOnly 必须为 FALSE（0x00）。0xff=TRUE 会让 openldap 只回属性名、值全为空 SET，
-    // 目录同步出来的用户全是「DN 当邮箱、名字未命名」（mock LDAP 忽略该标志所以从未暴露）。
-    new Uint8Array([0x01, 0x01, 0x00]),
-    searchFilter,
-    attrSelection,
-  ));
-}
-
-const buildUnbind = () => tlv(0x42, new Uint8Array(0));
-
-// LDAPMessage ::= SEQUENCE { messageID INTEGER, protocolOp } —— 所有消息都必须带这层包装
-const ldapMessage = (id: number, op: Uint8Array) => tlv(0x30, bytes(berInteger(id), op));
-
-// ---------- BER 解码 ----------
-
-type BerTlv = { tag: number; content: Uint8Array; end: number };
-
-function readTlv(buffer: Uint8Array, offset: number): BerTlv | null {
-  if (offset + 2 > buffer.length) return null;
-  const tag = buffer[offset];
-  const first = buffer[offset + 1];
-  let contentLength = 0;
-  let headerLength = 2;
-  if (first < 0x80) {
-    contentLength = first;
-  } else {
-    const count = first & 0x7f;
-    if (count === 0 || count > 4) throw new Error(`LDAP 响应长度编码异常（${first}）`);
-    if (offset + 2 + count > buffer.length) return null;
-    for (let index = 0; index < count; index += 1) contentLength = contentLength * 256 + buffer[offset + 2 + index];
-    headerLength = 2 + count;
-  }
-  const end = offset + headerLength + contentLength;
-  if (end > buffer.length) return null;
-  return { tag, content: buffer.subarray(offset + headerLength, end), end };
-}
-
-const berToString = (content: Uint8Array) => new TextDecoder().decode(content);
-const berToInteger = (content: Uint8Array) => content.reduce((sum, byte) => sum * 256 + byte, 0);
-
-function parseResultCode(content: Uint8Array): { code: number; message: string } {
-  // 兼容两种编码：protocolOp 直接是 resultCode 序列，或内层再包一层 SEQUENCE
-  const first = readTlv(content, 0);
-  const body = first && first.tag === 0x30 ? first.content : content;
-  let offset = 0;
-  let code = 0;
-  let message = "";
-  const enumerated = readTlv(body, offset);
-  if (enumerated) { code = berToInteger(enumerated.content); offset = enumerated.end; }
-  const matchedDn = readTlv(body, offset);
-  if (matchedDn) offset = matchedDn.end;
-  const diagnostic = readTlv(body, offset);
-  if (diagnostic) message = berToString(diagnostic.content);
-  return { code, message };
-}
-
-function parseSearchEntry(content: Uint8Array): LdapEntry {
-  // 兼容两种编码：条目体直接是 [objectName, attributes]，或内层再包一层 SEQUENCE
-  const first = readTlv(content, 0);
-  const body = first && first.tag === 0x30 ? first.content : content;
-  let offset = 0;
-  const objectName = readTlv(body, offset);
-  const dn = objectName ? berToString(objectName.content) : "";
-  if (objectName) offset = objectName.end;
-  const attributes: Record<string, string[]> = {};
-  const attrList = readTlv(body, offset);
-  if (attrList) {
-    let attrOffset = 0;
-    while (true) {
-      const partial = readTlv(attrList.content, attrOffset);
-      if (!partial) break;
-      attrOffset = partial.end;
-      let innerOffset = 0;
-      const type = readTlv(partial.content, innerOffset);
-      if (!type) break;
-      innerOffset = type.end;
-      const values: string[] = [];
-      const set = readTlv(partial.content, innerOffset);
-      if (set) {
-        let valueOffset = 0;
-        while (true) {
-          const value = readTlv(set.content, valueOffset);
-          if (!value) break;
-          values.push(berToString(value.content));
-          valueOffset = value.end;
-        }
-      }
-      attributes[berToString(type.content).toLowerCase()] = values;
-    }
-  }
-  return { dn, attributes };
-}
-
-// ---------- 连接与会话 ----------
-
 export class LdapError extends Error {}
 
 /** 绑定被目录拒绝（凭据错误 / 账号状态问题）。与连接类错误区分，登录接口据此给出准确提示。 */
@@ -265,6 +76,132 @@ export class LdapBindError extends LdapError {
 /** 同步与登录统一拉取的属性集：身份判定 + 部门 + 组 */
 export const LDAP_USER_ATTRIBUTES = ["mail", "userPrincipalName", "sAMAccountName", "uid", "displayName", "cn", "department", "distinguishedName", "memberOf"];
 
+const DEFAULT_SEARCH_FILTER = "(objectClass=person)";
+
+// ---------- 错误归一化 ----------
+
+const CONNECTION_HINTS: Record<string, string> = {
+  ECONNREFUSED: "目标端口没有服务在监听（地址/端口写错，或目录服务未启动）",
+  ENOTFOUND: "服务器地址无法解析（检查主机名拼写与 DNS）",
+  EAI_AGAIN: "服务器地址解析超时（检查 DNS 与网络连通性）",
+  ETIMEDOUT: "连接超时（网络不通或被防火墙拦截）",
+  ECONNRESET: "连接被对端重置（可能是端口被中间设备阻断）",
+  EHOSTUNREACH: "主机不可达（检查网段与路由）",
+  CERT_HAS_EXPIRED: "LDAPS 证书已过期",
+  DEPTH_ZERO_SELF_SIGNED_CERT: "LDAPS 证书为自签名；需在目录侧换成受信证书，或确认容忍自签名",
+  UNABLE_TO_VERIFY_LEAF_SIGNATURE: "LDAPS 证书链无法验证（缺少中间证书）",
+};
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** 把库/系统抛出的任意错误统一成 LdapError（保留原始信息，附加人话提示） */
+function asLdapError(error: unknown, context: string): LdapError {
+  if (error instanceof LdapError) return error;
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === "string" && CONNECTION_HINTS[code]) {
+    return new LdapError(`${context}失败：${CONNECTION_HINTS[code]}（${messageOf(error)}）`);
+  }
+  if (typeof code === "number") {
+    return new LdapError(`${context}失败（resultCode ${code}）：${messageOf(error)}`);
+  }
+  return new LdapError(`${context}失败：${messageOf(error)}`);
+}
+
+/** 结果码错误（ldapts 的 ResultCodeError 系列都带数字 code）→ LdapBindError */
+function asBindError(error: unknown): LdapBindError | null {
+  if (error instanceof LdapBindError) return error;
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === "number") return new LdapBindError(code, messageOf(error));
+  return null;
+}
+
+// ---------- 连接与查询 ----------
+
+function ldapUrl(config: LdapDirectConfig): string {
+  return `${config.ldaps ? "ldaps" : "ldap"}://${config.host}:${config.port}`;
+}
+
+function createClient(config: LdapDirectConfig): Client {
+  const timeoutMs = config.timeoutMs ?? 10000;
+  const options: ClientOptions = {
+    url: ldapUrl(config),
+    timeout: timeoutMs,
+    connectTimeout: timeoutMs,
+    // ⚠️ 必须关闭严格 DN 解析：登录兜底路径要用「域账号短名」或「UPN」直接 bind，
+    //    它们不是合法 DN，严格模式下会在本地就抛错、根本发不出去。
+    strictDN: false,
+    tlsOptions: config.ldaps
+      // 内网 AD 常用自签名证书；默认不校验（与旧实现行为一致），
+      // 需要严格校验时设 LDAP_TLS_REJECT_UNAUTHORIZED=true。
+      ? { rejectUnauthorized: env.LDAP_TLS_REJECT_UNAUTHORIZED === "true" }
+      : undefined,
+  };
+  return new Client(options);
+}
+
+function toLdapEntry(entry: Entry): LdapEntry {
+  const attributes: Record<string, string[]> = {};
+  for (const [key, value] of Object.entries(entry)) {
+    if (key === "dn" || key === "controls" || value === undefined) continue;
+    const list = Array.isArray(value) ? value : [value];
+    attributes[key.toLowerCase()] = list
+      .filter((item) => item !== undefined && item !== null)
+      .map((item) => (typeof item === "string" ? item : Buffer.isBuffer(item) ? item.toString("utf8") : String(item)));
+  }
+  return { dn: entry.dn, attributes };
+}
+
+async function bindOrThrow(client: Client, dn: string, password: string): Promise<void> {
+  try {
+    await client.bind(dn, password);
+  } catch (error) {
+    const bindError = asBindError(error);
+    // 数字 resultCode = 目录明确拒绝了这次绑定（凭据/账号状态）→ 抛 LdapBindError
+    if (bindError) throw bindError;
+    // 其余（连不上、超时、TLS）→ 连接类错误
+    throw asLdapError(error, "连接目录服务");
+  }
+}
+
+async function searchEntries(
+  client: Client,
+  baseDn: string,
+  attributes: string[],
+  filter: string | undefined,
+  config: LdapDirectConfig,
+): Promise<LdapEntry[]> {
+  const options: SearchOptions = {
+    scope: "sub",
+    derefAliases: "never",
+    // ⚠️ 必须为 true：等价于旧实现的 typesOnly=FALSE。若为 false，目录只回属性名、值全空，
+    //    同步出来的用户会全是「DN 当邮箱、名字未命名」。
+    returnAttributeValues: true,
+    sizeLimit: 0,
+    timeLimit: 10,
+    filter: filter?.trim() || DEFAULT_SEARCH_FILTER,
+    attributes,
+  };
+  if (config.pageSize && config.pageSize > 0) options.paged = { pageSize: config.pageSize };
+  try {
+    const result = await client.search(baseDn, options);
+    return result.searchEntries.map(toLdapEntry);
+  } catch (error) {
+    throw asLdapError(error, `搜索目录（Base DN ${baseDn}，过滤器 ${options.filter}）`);
+  }
+}
+
+async function safeUnbind(client: Client): Promise<void> {
+  try {
+    await client.unbind();
+  } catch {
+    // 连接可能已断开或超时，忽略
+  }
+}
+
+// ---------- 对外接口 ----------
+
 export type LdapSession = {
   bind: (bindDn: string, password: string) => Promise<void>;
   search: (baseDn: string, attributes: string[], filter?: string) => Promise<LdapEntry[]>;
@@ -277,103 +214,25 @@ export type LdapSession = {
  * 调用方负责在 finally 里 unbind + close —— 失败路径也不能漏，否则连接会挂到超时。
  */
 export async function openLdapSession(config: LdapDirectConfig): Promise<LdapSession> {
-  const timeoutMs = config.timeoutMs ?? 10000;
-  const { connect } = await import("cloudflare:sockets");
-  const socket = connect({ hostname: config.host, port: config.port }, { secureTransport: config.ldaps ? "on" : "off", allowHalfOpen: false });
-  const writer = socket.writable.getWriter();
-  const reader = socket.readable.getReader();
-  let closed = false;
-  // 用 slice 而非 subarray 维护缓冲区：避免 Uint8Array<ArrayBufferLike> 与 ArrayBuffer 的类型不兼容，
-  // 同时防止残留视图长期持有已消费的底层内存。
-  let buffer: Uint8Array = new Uint8Array(0);
-  let nextMessageId = 1;
-
-  function close() {
-    if (closed) return;
-    closed = true;
-    try { writer.releaseLock(); } catch { /* 已释放 */ }
-    try { reader.releaseLock(); } catch { /* 已释放 */ }
-    try { socket.close(); } catch { /* 已关闭 */ }
-  }
-
-  const timer = setTimeout(close, timeoutMs);
-
-  async function nextMessage(): Promise<Uint8Array> {
-    while (true) {
-      const message = readTlv(buffer, 0);
-      if (message) { buffer = buffer.slice(message.end); return message.content; }
-      const { value, done } = await reader.read();
-      if (done || !value || value.length === 0) throw new LdapError("LDAP 连接在收到完整响应前被关闭");
-      buffer = bytes(buffer, value);
-    }
-  }
-
-  // 取回指定 messageID 的 protocolOp：LDAPMessage = SEQUENCE { messageID INTEGER, protocolOp }
-  async function readProtocolOp(messageId: number): Promise<BerTlv> {
-    while (true) {
-      const message = await nextMessage();
-      let offset = 0;
-      const id = readTlv(message, offset);
-      if (!id) continue;
-      offset = id.end;
-      const protocolOp = readTlv(message, offset);
-      if (!protocolOp) continue;
-      if (berToInteger(id.content) !== messageId) continue;
-      return protocolOp;
-    }
-  }
-
-  async function bind(bindDn: string, password: string): Promise<void> {
-    const messageId = nextMessageId++;
-    await writer.write(ldapMessage(messageId, buildBindRequest(bindDn, password)));
-    const protocolOp = await readProtocolOp(messageId);
-    if (protocolOp.tag !== 0x61) throw new LdapError(`LDAP 绑定响应异常（tag 0x${protocolOp.tag.toString(16)}）`);
-    const result = parseResultCode(protocolOp.content);
-    if (result.code !== 0) throw new LdapBindError(result.code, result.message);
-  }
-
-  async function search(baseDn: string, attributes: string[], filter?: string): Promise<LdapEntry[]> {
-    const messageId = nextMessageId++;
-    await writer.write(ldapMessage(messageId, buildSearchRequest(baseDn, attributes, filter)));
-    const entries: LdapEntry[] = [];
-    while (true) {
-      const protocolOp = await readProtocolOp(messageId);
-      if (protocolOp.tag === 0x64) { // searchResEntry
-        entries.push(parseSearchEntry(protocolOp.content));
-        continue;
-      }
-      if (protocolOp.tag === 0x65) { // searchResDone
-        const result = parseResultCode(protocolOp.content);
-        if (result.code !== 0 && result.code !== 4) { // 4 = sizeLimitExceeded，返回已收到的条目
-          throw new LdapError(`LDAP 搜索失败（resultCode ${result.code}）：${result.message || "未知错误"}，请检查 Base DN 与过滤器`);
-        }
-        break;
-      }
-    }
-    return entries;
-  }
-
-  async function unbind(): Promise<void> {
-    try { await writer.write(ldapMessage(nextMessageId++, buildUnbind())); } catch { /* 忽略 unbind 失败 */ }
-  }
-
+  const client = createClient(config);
   return {
-    bind,
-    search,
-    unbind,
-    close: () => { clearTimeout(timer); close(); },
+    bind: (bindDn, password) => bindOrThrow(client, bindDn, password),
+    search: (baseDn, attributes, filter) => searchEntries(client, baseDn, attributes, filter, config),
+    unbind: () => safeUnbind(client),
+    close: () => {
+      void safeUnbind(client);
+    },
   };
 }
 
 /** 目录同步：服务帐号 bind → subtree search */
 export async function ldapSearchUsers(config: LdapDirectConfig): Promise<LdapEntry[]> {
-  const session = await openLdapSession(config);
+  const client = createClient(config);
   try {
-    await session.bind(config.bindDn, config.bindPassword);
-    return await session.search(config.baseDn, LDAP_USER_ATTRIBUTES, config.filter);
+    await bindOrThrow(client, config.bindDn, config.bindPassword);
+    return await searchEntries(client, config.baseDn, LDAP_USER_ATTRIBUTES, config.filter, config);
   } finally {
-    await session.unbind().catch(() => undefined);
-    session.close();
+    await safeUnbind(client);
   }
 }
 
@@ -416,29 +275,31 @@ export async function ldapAuthenticate(config: LdapDirectConfig, account: string
   let matchedBy: LdapAuthResult["matchedBy"] = "direct";
 
   // 步骤 1：定位 DN —— 失败不致命，属"锦上添花"（能拿到条目才能回填姓名/部门）
-  const lookup = await openLdapSession(config);
+  const lookup = createClient(config);
   try {
-    await lookup.bind(config.bindDn, config.bindPassword);
-    const entries = await lookup.search(config.baseDn, LDAP_USER_ATTRIBUTES, buildUserLookupFilter(login));
-    if (entries.length) { entry = entries[0]; dn = entry.dn; matchedBy = "search"; }
+    await bindOrThrow(lookup, config.bindDn, config.bindPassword);
+    const entries = await searchEntries(lookup, config.baseDn, LDAP_USER_ATTRIBUTES, buildUserLookupFilter(login), config);
+    if (entries.length) {
+      entry = entries[0];
+      dn = entry.dn;
+      matchedBy = "search";
+    }
   } catch (error) {
     // 服务帐号自身配错（密码过期/被禁用）必须原样抛给管理员，不能被兜底路径掩盖
     if (error instanceof LdapBindError) throw error;
     // 其它情况（搜索被拒、目录不支持该过滤器）走直接 bind 兜底
   } finally {
-    await lookup.unbind().catch(() => undefined);
-    lookup.close();
+    await safeUnbind(lookup);
   }
 
   if (!dn && !DN_LIKE.test(login)) throw new LdapBindError(49, "账号或密码不正确");
 
   // 步骤 2：以用户凭据 bind —— 唯一能证明密码正确的一步
-  const verify = await openLdapSession(config);
+  const verify = createClient(config);
   try {
-    await verify.bind(dn || login, password);
+    await bindOrThrow(verify, dn || login, password);
     return { dn: dn || login, entry, matchedBy };
   } finally {
-    await verify.unbind().catch(() => undefined);
-    verify.close();
+    await safeUnbind(verify);
   }
 }

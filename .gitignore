@@ -61,11 +61,13 @@ next-env.d.ts
 # 勿入库的一次性产物与本地备份
 /.backup/
 
+# 本地数据目录（SQLite + 隔离区文件 + 备份），可整体搬迁/备份
+/.local-data/
+
 # ⚠️ 以下目录是构建必需源码，切勿加入忽略：
-#   /build/    —— vite.config.ts 引用 ./build/sites-vite-plugin
-#   /vendor/   —— app/globals.css @import ../vendor/shadcn-tailwind-*.css
-#   /.openai/  —— vite.config.ts 引用 ./.openai/hosting.json
-#   /examples/ —— 模板示例，业务未使用（2026-09-24 已移入隔离区）
+#   /vendor/ —— app/globals.css @import ../vendor/shadcn-tailwind-*.css
+# 注：/build/、/.openai/、vite.config.ts 已于 2026-09-24 随「去 Workers 化」重构移除
+#（旧架构：vinext + @cloudflare/vite-plugin 产 dist/，再由 wrangler dev 拉起）。
 
 # 临时分析探针（下划线开头的一次性脚本/输出）
 /_probe*.tmp
