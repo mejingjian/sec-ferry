@@ -1,4 +1,4 @@
-# 停止本地开发/预览服务（Next 的 dev 或 standalone server）。
+﻿# 停止本地开发/预览服务（Next 的 dev 或 standalone server）。
 #
 # 旧的停止脚本针对 workerd / wrangler；重构后运行时是普通 Node 进程，
 # 因此改为「按命令行识别本项目的 node 进程 + 按端口兜底」。

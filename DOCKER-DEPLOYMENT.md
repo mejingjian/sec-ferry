@@ -69,12 +69,18 @@ docker compose --profile dev up -d    # 再带一个测试用 LDAP（仅开发/�
 
 | 地址 | 用途 |
 |---|---|
-| http://127.0.0.1:8787 | 平台（默认只绑回环，避免误暴露） |
+| http://<本机内网IP>:8787 | 平台（`.env` 中 `PLATFORM_BIND=0.0.0.0` 时内网同事可直接访问；填 `127.0.0.1` 则只有本机能开） |
 | `127.0.0.1:8787/healthz` | 存活探针（进程活着就 200） |
 | `127.0.0.1:8787/readyz` | 就绪探针（库可读写 + 存储目录可写） |
 | ldap://127.0.0.1:389 | 测试 LDAP（`--profile dev` 才有） |
 
 镜像自带 `HEALTHCHECK`（打 `/healthz`），用 `docker compose ps` 看健康状态。
+
+> ⚠️ **改了 `PLATFORM_BIND` 也不一定能通。** Docker Desktop 会在「域(Domain)/公用(Public)」网络下
+> 自动创建 `Docker Desktop Backend` 的入站 **Block** 规则（针对 `com.docker.backend.exe`），而 Windows
+> 防火墙里**显式 Block 优先于 Allow** —— 所以还需以**管理员身份**运行一次
+> `scripts/open-lan-access.ps1`（放行 8787 并停用那两条 Block，`-Revert` 可完整回滚）。
+> 本机实测：域认证网络下不加这条规则，其它机器是连不上的。
 
 ## 4. 持久卷与数据
 
@@ -139,7 +145,7 @@ docker compose logs --tail=50 backup                          # 看历史
 | `LDAP_PAGE_SIZE` | 否 | 搜索分页每页条目数，默认 500；`0` 关闭（AD 单次上限默认 1000 条） |
 | `LDAP_TLS_REJECT_UNAUTHORIZED` | 否 | LDAPS 是否严格校验证书；自签名内网 AD 保持 `false` |
 | `BACKUP_INTERVAL_SECONDS` / `BACKUP_KEEP` | 否 | 备份周期与数据库保留份数 |
-| `PLATFORM_BIND` | 否 | 宿主机绑定地址，默认 `127.0.0.1`（内网正式部署改审批网段地址） |
+| `PLATFORM_BIND` | 否 | 宿主机绑定地址。`0.0.0.0` = 内网各机器均可访问（本平台默认配置）；`127.0.0.1` = 仅本机；也可填具体网卡地址收窄范围 |
 | `IMAGE_TAG` | 否 | 镜像标签，回滚时指定上一版本 |
 
 ## 7. 构建、升级与回滚

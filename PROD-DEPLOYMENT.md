@@ -79,7 +79,7 @@ docker compose ps                        # 期待 platform 为 healthy
 | `LDAP_TLS_REJECT_UNAUTHORIZED` | 否 | `false` | LDAPS 严格校验证书 |
 | `BACKUP_INTERVAL_SECONDS` | 否 | `86400` | 备份周期 |
 | `BACKUP_KEEP` | 否 | `14` | 数据库快照保留份数 |
-| `PLATFORM_BIND` | 否 | `127.0.0.1` | 宿主机端口绑定地址；内网正式部署改审批网段地址或前置反代 |
+| `PLATFORM_BIND` | 否 | `0.0.0.0` | 宿主机端口绑定地址；`0.0.0.0` 内网全员可达，`127.0.0.1` 仅本机，也可绑具体网卡地址或前置反代 |
 | `IMAGE_TAG` | 否 | `latest` | 镜像标签，回滚时使用 |
 
 > 历史变量 `DELIVERY_*` / `GATEWAY_*` 已随「历史外发/交付网关」功能于 2026-09-22 整体移除，**不要再配**。

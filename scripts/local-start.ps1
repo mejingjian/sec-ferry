@@ -35,6 +35,20 @@ node "--env-file-if-exists=$EnvFile" ./scripts/migrate.mjs
 if ($LASTEXITCODE -ne 0) { throw "数据库迁移失败" }
 
 $env:PORT = "8787"
-$env:HOSTNAME = "127.0.0.1"
-Write-Host "启动平台：http://127.0.0.1:8787 （数据目录 $env:DATA_DIR）" -ForegroundColor Green
+# 默认监听所有网卡：内网同事用本机 IP 就能访问。只想本机可访问就设 $env:HOSTNAME = "127.0.0.1"。
+if (-not $env:HOSTNAME) { $env:HOSTNAME = "0.0.0.0" }
+
+# 挑一个真实内网 IPv4 打印出来，方便把地址直接发给同事（取不到就退回本机回环）
+$LanIp = $null
+try {
+  $LanIp = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
+    Where-Object { $_.IPAddress -notlike "127.*" -and $_.IPAddress -notlike "169.254.*" -and $_.InterfaceAlias -notmatch "vEthernet|Loopback|WSL|Hyper-V" } |
+    Sort-Object -Property InterfaceMetric | Select-Object -First 1).IPAddress
+} catch {}
+if ($LanIp) {
+  $AccessUrl = "http://${LanIp}:$($env:PORT)（内网，可直接发给同事） / http://127.0.0.1:$($env:PORT)（本机）"
+} else {
+  $AccessUrl = "http://127.0.0.1:$($env:PORT)"
+}
+Write-Host "启动平台：$AccessUrl （数据目录 $env:DATA_DIR）" -ForegroundColor Green
 node "--env-file-if-exists=$EnvFile" $ServerEntry

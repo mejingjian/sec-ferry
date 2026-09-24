@@ -19,7 +19,7 @@
 ```bash
 npm install
 npm run db:migrate      # 幂等：按 drizzle/*.sql 建库/补迁移
-npm run dev             # next dev，http://127.0.0.1:8787
+npm run dev             # next dev，本机 http://127.0.0.1:8787（next dev 默认也监听所有网卡）
 ```
 
 `next dev` 会**自动加载** `.env`。
@@ -32,11 +32,15 @@ npm run local:start     # 产物过期自动重建 → 迁移 → 起 .next/stan
 ```
 
 `local:start` 跑的就是容器里跑的那个文件（`.next/standalone/server.js`），
-端口固定 `127.0.0.1:8787`，所以「本地能跑」与「容器能跑」的差异面被压到最小。
+端口固定 `8787`、默认监听所有网卡（内网同事可用本机 IP 访问；设 `HOSTNAME=127.0.0.1` 可收回本机），
+所以「本地能跑」与「容器能跑」的差异面被压到最小。
 
 > `.next/standalone/server.js` 不会自己加载 `.env`（只有 `next dev` 会），
 > 所以脚本用 `node --env-file-if-exists=.env` 显式喂进去。
 > 该参数**不覆盖**已存在的真实环境变量，文件不存在时静默跳过 —— 容器里就是这种情况。
+
+> 让内网同事访问：需要以管理员身份运行 `scripts/open-lan-access.ps1` 放行 Windows 防火墙 8787
+>（原理与回滚方式见脚本头注释）。`npm run dev` 默认监听所有网卡，同样适用。
 
 ## 3. 数据目录
 
