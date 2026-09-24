@@ -137,8 +137,35 @@ export const integrationSettings = sqliteTable("integration_settings", {
   syncIntervalMinutes: integer("sync_interval_minutes").notNull().default(30),
   // 内容类型防伪装策略开关（0009）：normal=不一致拒绝+未知转人工；strict=一律拒绝；off=仅记录
   contentTypeGuard: text("content_type_guard").notNull().default("normal"),
+  // 内网 SMTP 发信配置（0010）：均可空 = 未启用邮件通知；密码加密存储同 encryptedSecret
+  smtpHost: text("smtp_host"),
+  smtpPort: integer("smtp_port"),
+  // 隐式 TLS（通常 465）；false=明文/STARTTLS（通常 25/587）
+  smtpSecure: integer("smtp_secure", { mode: "boolean" }).notNull().default(false),
+  smtpFrom: text("smtp_from"),
+  smtpUsername: text("smtp_username"),
+  smtpEncryptedSecret: text("smtp_encrypted_secret"),
   updatedAt: text("updated_at").notNull(),
 });
+
+// 发件队列（0010）：通知先入队再异步发送，失败不阻断主流程，可在 attempts 上限内重试。
+// kind：APPROVAL_PENDING（审批待办）/ DELIVERED（收件通知）/ TEST（管理员测试发送）
+export const mailOutbox = sqliteTable("mail_outbox", {
+  id: text("id").primaryKey(),
+  applicationId: text("application_id"),
+  kind: text("kind").notNull(),
+  toAddress: text("to_address").notNull(),
+  subject: text("subject").notNull(),
+  body: text("body").notNull(),
+  status: text("status").notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  lastError: text("last_error"),
+  createdAt: text("created_at").notNull(),
+  sentAt: text("sent_at"),
+}, (table) => [
+  index("mail_outbox_status_idx").on(table.status),
+  index("mail_outbox_application_idx").on(table.applicationId),
+]);
 
 export const roleAssignments = sqliteTable("role_assignments", {
   email: text("email").primaryKey(),

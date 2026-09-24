@@ -6,6 +6,7 @@ import { MAX_UPLOAD_BYTES, UploadLengthRequiredError, UploadTooLargeError, putSt
 import { isTypeMismatch, sniffFileType } from "@/lib/file-type";
 import { applyContentGuard, getContentTypeGuard } from "@/lib/content-guard";
 import { visibleApplications } from "@/lib/visibility";
+import { dispatchMailOutbox, fallbackApproverEmails, notifyApprovalPending } from "@/lib/mail";
 
 // 送达信息：按发送单聚合（新模型每个收件人一条记录）。
 // 只取「本次可见发送单」的送达记录：避免把他人发送单的收件人与下载留痕一并返回。
@@ -284,6 +285,21 @@ export async function POST(request: Request) {
       const pipeline = await runDeliveryPipeline(inserted, actor, { trigger: "规则自动通过" });
       await appendAudit(actor, "上传并提交发送单", id, `${pipeline.status}；命中 ${matched.id}（规则自动通过）`, JSON.stringify({ fileName, extension, sizeBytes, department, recipients: emails, ruleId: matched.id, sha256, status: pipeline.status, message: pipeline.message, detectedKind: sniff.kinds.join(",") || "unknown", typeMismatch, guard }));
       return Response.json({ ...row, status: pipeline.status, decisionReason: pipeline.message }, { status: 201 });
+    }
+
+    // ⑥ 邮件通知：转人工审批时的审批待办通知（先入队再后台发送，任何异常不影响提交结果）。
+    // 收件人 = 规则/管理员指派的审批人；未指派时兜底通知「审批人」角色名单（roleAssignments + 环境变量）。
+    if (status === APPLICATION_STATUS.PENDING_APPROVAL) {
+      try {
+        const requesterEmail = (actor.email || "").toLowerCase();
+        const approvers = (assignedApprovers ? parseApproverEmails(assignedApprovers) : await fallbackApproverEmails())
+          .filter((email) => email !== requesterEmail); // 发起人自己不收待办通知
+        const queued = await notifyApprovalPending(
+          { id, fileName, sizeBytes, requesterName: actor.display, department, description, decisionReason },
+          approvers,
+        );
+        if (queued) dispatchMailOutbox();
+      } catch { /* 通知失败不影响提交 */ }
     }
 
     await appendAudit(actor, "上传并提交发送单", id, `${status}；命中 ${matched.id}`, JSON.stringify({ fileName, extension, sizeBytes, department, recipients: emails, ruleId: matched.id, sha256, assignedApprovers: assignedApprovers || null, skippedRules: evaluation.skipped, decisionReason, detectedKind: sniff.kinds.join(",") || "unknown", detectedExtensions: sniff.extensions.join(",") || null, typeMismatch, guard }));

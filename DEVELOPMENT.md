@@ -128,12 +128,13 @@ npm run local:reset         # 重置演示数据
 | `session.ts` / `login-guard.ts` | 会话与登录失败锁定 | 锁定记录在 `login_attempts` 表（非内存），锁定返回 429。勿用「lockedUntil 空 ⇒ 已过期」判断（踩过坑） |
 | `ldap-client.ts` | LDAP 直连（ldapts） | 搜索必须 `returnAttributeValues: true`（等价旧实现的 `typesOnly=FALSE`）。历史上写错值会让 openldap 只回属性名、值全空，导致同步出"DN 当邮箱"的坏用户；mock 目录忽略该标志所以本地从未暴露 |
 | `ldap-config.ts` / `ldap-user.ts` | 认证源配置（加密存储）、目录用户 | 登录与同步**共用**同一份解密/组装逻辑 |
+| `mail.ts` | 内网 SMTP 邮件通知（0010）：审批待办 + 收件通知 | 手写最小 SMTP 客户端（node:net/tls，**零新依赖**，npm 只能 `--offline` 装不了 nodemailer）。业务路径只入队 `mail_outbox`，`dispatchMailOutbox()` 后台消费，失败不阻断主流程；密码加密同 LDAP（AES-GCM） |
 
 ---
 
 ## 6. 数据模型与迁移
 
-11 张表（`db/schema.ts`）：
+12 张表（`db/schema.ts`）：
 
 | 表 | 用途 |
 |---|---|
@@ -145,8 +146,9 @@ npm run local:reset         # 重置演示数据
 | `download_events` | 下载事件流水 |
 | `ldap_users` / `ldap_sync_runs` | LDAP 目录快照与同步记录 |
 | `login_attempts` | 登录失败锁定 |
-| `integration_settings` | 集成配置（LDAP 认证源、contentTypeGuard 开关等，加密存储） |
+| `integration_settings` | 集成配置（LDAP 认证源、contentTypeGuard 开关、SMTP 发信配置 smtp_*（0010）等，加密存储） |
 | `role_assignments` | 角色分配（管理员/审批人/审计员） |
+| `mail_outbox` | 邮件发件队列（0010）：pending/sent/failed + attempts 重试计数；SMTP 未配置时通知只入队暂存，配置后自动发出 |
 
 **迁移规范（已大幅简化，务必按新流程）**：
 
@@ -175,6 +177,7 @@ POST /api/applications/[id]/revoke             # 撤回：本人 + 管理员/审
 POST /api/applications/[id]/transfer           # 转办
 GET  /api/files/[id]                           # 下载（鉴权见 §9）
 GET/PUT /api/admin/config                      # PUT 认证源字段名是 secret（LDAP bind 密码）
+GET/PUT/POST /api/admin/mail-config            # SMTP 配置读写（secret=SMTP 密码）；POST=测试发送并补发积压队列
 GET/POST /api/admin/roles                      # 角色分配
 GET/POST /api/rules ; GET/PUT/DELETE /api/rules/[id] ; POST /api/rules/preview
 POST /api/ldap/sync ; POST /api/ldap/test-bind
@@ -212,13 +215,14 @@ GET  /readyz                                   # 就绪探针（查库 + 存储�
    - 规则引擎判定：自动通过 → 直接进送达 pipeline；否则 `status=待审批`，`assignedApprovers` 已剔除发起人
    - 落库 `detected_kind/detected_extensions/type_mismatch/content_signature`
 2. **审批**：通过后走与自动通过相同的 pipeline，逐收件人写 `download_deliveries`。
-3. **下载** `files/[id]` 鉴权顺序：
+3. **邮件通知（0010，`lib/mail.ts`）**：转人工审批时给指派审批人（未指派则「审批人」角色名单 + `PLATFORM_APPROVER_EMAILS`，剔除发起人）发审批待办邮件；送达后给各收件人发收件通知。只入队不阻塞：SMTP 未配置/发送失败只影响 `mail_outbox` 行状态（失败重试至 5 次、3 天截止），管理员测试发送接口会顺带补发积压。SMTP 配置在管理页「内网 SMTP 发信」卡片，密码 AES-GCM 加密；自签名中继可设 `SMTP_TLS_REJECT_UNAUTHORIZED=0`。回归：`scripts/test-mail-notify.mjs`（含内嵌 mock SMTP）。
+4. **下载** `files/[id]` 鉴权顺序：
    - 本人 / 管理员 / 审计员 / 被指派审批人 → 放行
    - 收件人 → 须满足：单据 `TRANSFERRED` + 该收件人送达 enabled + 未撤回；
      否则返回明确原因 `NOT_DELIVERED` / `DELIVERY_REVOKED` / `FORBIDDEN`
-4. **撤回**：本人 + 管理员/审批人。
-5. **收件箱角标**：走 NavGroup badges；"已读"以 `first_downloaded_at` 为凭据，无已读表。
-6. **错误路径先排空请求体再响应**（`failWithStream`）：这样对端能拿到完整错误响应而不是被复位连接。
+5. **撤回**：本人 + 管理员/审批人。
+6. **收件箱角标**：走 NavGroup badges；"已读"以 `first_downloaded_at` 为凭据，无已读表。
+7. **错误路径先排空请求体再响应**（`failWithStream`）：这样对端能拿到完整错误响应而不是被复位连接。
    （历史上是为规避 workerd 对上传流 `cancel()` 导致的 worker 瞬断，迁移到 Node 后仍保留此写法。）
 
 ---
@@ -255,6 +259,7 @@ GET  /readyz                                   # 就绪探针（查库 + 存储�
 | `verify-content-type.mjs` | 26 项内容防护 | 收件人可用 `E2E_RECIPIENT_EMAIL` 环境变量回退 |
 | `test-ldap-login.mjs` | 18 项 LDAP 登录 | **zhaoliu 会触发锁定 15 分钟**，别频繁跑 |
 | `check-sha256.mjs` | 11 项流式哈希自检 | |
+| `test-mail-notify.mjs` | 邮件通知闭环（SMTP 配置/测试发送/故障不阻断/积压补发/审批+收件通知） | 内嵌 mock SMTP（127.0.0.1:2525）；容器实例默认 `--smtp-host host.docker.internal`，本地实例传 `127.0.0.1`；结束自动还原邮件配置 |
 | `mock-ldap-server.mjs` | 本地 mock LDAP | `node scripts/mock-ldap-server.mjs --port 3890`，口令=账号名 |
 | `migrate.mjs` | 迁移 CLI | `--status` 只打印已应用/待应用 |
 | `backup.mjs` | 数据库热备 + 文件增量镜像 | `--no-files` / `--keep N` / `--out DIR` |

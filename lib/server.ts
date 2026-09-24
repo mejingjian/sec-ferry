@@ -4,6 +4,7 @@ import { getDb } from "@/db";
 import { applications, applicationRecipients, auditEvents, downloadDeliveries, downloadEvents, roleAssignments, rules } from "@/db/schema";
 import { readSession } from "@/lib/session";
 import { createFileBucket, type FileBucket } from "@/lib/storage";
+import { dispatchMailOutbox, notifyDelivered } from "@/lib/mail";
 
 export type Actor = { id: string; email: string | null; display: string };
 
@@ -284,6 +285,16 @@ export async function runDeliveryPipeline(application: typeof applications.$infe
   const message = `已向 ${recipients.length} 位收件人送达`;
   await db.update(applications).set({ status: APPLICATION_STATUS.TRANSFERRED, updatedAt: now, decisionReason: message }).where(eq(applications.id, application.id));
   await appendAudit(actor, "送达完成", application.id, "TRANSFERRED", JSON.stringify({ recipients: recipients.map((item) => item.email) }));
+
+  // ⑥ 邮件通知：收件通知（先入队再后台发送，任何异常不影响送达结果）
+  try {
+    const queued = await notifyDelivered(
+      { id: application.id, fileName: application.fileName, sizeBytes: application.sizeBytes, requesterName: application.requesterName, description: application.description },
+      recipients.map((item) => ({ email: item.email, name: item.name })),
+    );
+    if (queued) dispatchMailOutbox();
+  } catch { /* 通知失败不影响送达 */ }
+
   return { status: APPLICATION_STATUS.TRANSFERRED, message, recipientCount: recipients.length };
 }
 
