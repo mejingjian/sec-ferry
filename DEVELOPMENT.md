@@ -278,14 +278,16 @@ GET  /readyz                                   # 就绪探针（查库 + 存储�
 ## 13. Docker 部署要点（详见 DOCKER-DEPLOYMENT.md）
 
 ```bash
-cp .env.docker.example .env       # CONFIG_ENCRYPTION_KEY 随机 32 字节 hex（备份勿提交）
+cp .env.docker.example .env.docker   # CONFIG_ENCRYPTION_KEY 随机 32 字节 hex（备份勿提交）
+                                     # 容器读 .env.docker；根 .env 只给本地 dev 用，两者密钥不共用
 npm run docker:build && npm run docker:up:dev    # dev profile 才含测试用 LDAP 容器
 npm run docker:smoke
 ```
 
 三阶段单镜像（deps → builder → runtime），**运行阶段不装任何包**，只 COPY `.next/standalone` +
 `db/*.mjs`/`scripts/*.mjs`（让启动前迁移能 fail-fast）；`/data` 三卷（db/files/backups）；
-`backup` sidecar 复用同镜像循环跑 `backup.mjs`；非 root uid 10001；HEALTHCHECK 打 `/healthz`。
+`backup` sidecar 复用同镜像循环跑 `backup.mjs`（备份产物写完即校验，见该脚本 `verifyBackup`）；
+非 root uid 10001 + 只读根 FS + `cap_drop ALL` + `no-new-privileges`；HEALTHCHECK 打 `/healthz`。
 
 容器内配置链路（首启手工配一次）：先用兜底 `local:true` 登录 → PUT `/api/admin/config`
 指向 `ldap:389`（字段名 `secret`）→ POST `/api/ldap/sync` → 管理页配角色。

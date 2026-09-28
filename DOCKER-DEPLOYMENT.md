@@ -60,16 +60,22 @@
 ## 3. 快速开始（单机起全套）
 
 ```bash
-cp .env.docker.example .env
+cp .env.docker.example .env.docker    # ⚠️ 是 .env.docker，不要覆盖根目录 .env（那是本地开发用的）
 # 必填一项：CONFIG_ENCRYPTION_KEY（生成：openssl rand -hex 32）
 # 强烈建议同时填 PLATFORM_ADMIN_EMAILS —— 它是「登录必须校验域密码」的开关，见 §6
-docker compose up -d --build          # 平台 + 备份 sidecar
-docker compose --profile dev up -d    # 再带一个测试用 LDAP（仅开发/联调）
+docker compose --env-file .env.docker up -d --build          # 平台 + 备份 sidecar
+docker compose --env-file .env.docker --profile dev up -d    # 再带一个测试用 LDAP（仅开发/联调）
+# 等价的 npm 脚本（已内置 --env-file .env.docker）：
+#   npm run docker:up / npm run docker:up:dev / npm run docker:build
 ```
+
+> 容器与本地开发**用两份不同的环境文件**：根目录 `.env` 只给 `npm run dev` / `local:start` 用，
+> 容器一律走 `.env.docker`。这样开发机上的密钥不会顺带成为容器的加密密钥 ——
+> 一旦开发密钥泄漏，容器里已加密的 LDAP 服务账号口令就跟着失效。两份文件互不影响。
 
 | 地址 | 用途 |
 |---|---|
-| http://<本机内网IP>:8787 | 平台（`.env` 中 `PLATFORM_BIND=0.0.0.0` 时内网同事可直接访问；填 `127.0.0.1` 则只有本机能开） |
+| http://<本机内网IP>:8787 | 平台（`.env.docker` 中 `PLATFORM_BIND=0.0.0.0` 时内网同事可直接访问；填 `127.0.0.1` 则只有本机能开） |
 | `127.0.0.1:8787/healthz` | 存活探针（进程活着就 200） |
 | `127.0.0.1:8787/readyz` | 就绪探针（库可读写 + 存储目录可写） |
 | ldap://127.0.0.1:389 | 测试 LDAP（`--profile dev` 才有） |
@@ -100,8 +106,16 @@ docker compose --profile dev up -d    # 再带一个测试用 LDAP（仅开发/�
 `backup` service 复用平台镜像，循环调用 `scripts/backup.mjs`：
 
 - 数据库：走 SQLite 官方**在线备份 API**（`node:sqlite` 的 `backup()`）—— 不停服、**不会漏掉未 checkpoint 的 WAL**；
+- **写完立即校验**：0 字节 / 非 SQLite 文件头 / `PRAGMA quick_check` 不通过 / 缺 `__platform_migrations` 表 → 判定失败，
+  当场删掉该产物并让本次备份以非 0 退出码结束（校验在临时副本上做，不会在备份目录里留下 `-shm`/`-wal` 副产物）；
+- **巡检历史产物**：每轮顺手删掉确定无意义的 0 字节备份与校验副产物；非空但校验不通过的只告警不自动删（交人工判断）；
 - 文件：增量镜像到 `/data/backups/files`（按 size+mtime 判重，不做多份快照，避免吃满磁盘）；
-- 保留策略：数据库快照默认保留最近 14 份（`BACKUP_KEEP`），周期默认 24h（`BACKUP_INTERVAL_SECONDS`）。
+- 保留策略：数据库快照默认保留最近 14 份（`BACKUP_KEEP`，只统计 `platform-*.db` 本体，副产物不占名额），
+  周期默认 24h（`BACKUP_INTERVAL_SECONDS`）。
+
+> 为什么要校验：备份「命令没报错」不等于**可用**。容器重建 / 宿主重启若正好打断写入，
+> 会留下 0 字节或半成品文件；而它会照样被保留策略当成一份有效备份占位 —— 需要恢复时才发现是空的。
+> 本机实测确实命中过：`/data/backups/db/platform-20260927-141259.db` 就是 0 字节。
 
 ```bash
 docker compose exec backup node scripts/backup.mjs            # 立刻做一次
@@ -131,7 +145,33 @@ docker compose logs --tail=50 backup                          # 看历史
   否则任何人都能用自声明邮箱登录，等于可冒用任意身份收发文件。
 - 域账号登录建议开 LDAPS（636）或 StartTLS，否则密码明文过网；失败锁定阈值见 §7 变量矩阵。
 
+### 5.1 容器运行时加固（compose 已内置）
+
+`platform` 与 `backup` 两个服务都按下面这套跑，`docker inspect` 可直接核验：
+
+| 项 | 值 | 作用 |
+|---|---|---|
+| `read_only: true` | 根文件系统只读 | 镜像不可变，运行期无法写入自身；唯一可写处是 `/data` 卷 |
+| `tmpfs: /tmp`、`/app/.next/cache` | 内存临时盘 | Next 运行期需要写缓存/临时文件，给最小可写面 |
+| `cap_drop: [ALL]` | 丢弃全部 Linux capabilities | 监听 8787（>1024）不需要 `NET_BIND_SERVICE`，容器也不需要任何特权 |
+| `security_opt: no-new-privileges:true` | 禁止提权 | 阻断 setuid/setgid 提权路径 |
+| `USER app`（uid 10001） | 非 root 运行 | 镜像内已建独立用户 |
+
+```bash
+# 核验加固是否生效
+docker inspect transfer-approval-platform-platform-1 \
+  --format 'ReadonlyRootfs={{.HostConfig.ReadonlyRootfs}} CapDrop={{json .HostConfig.CapDrop}} SecOpt={{json .HostConfig.SecurityOpt}}'
+# 只读根自测：写 /app 应被拒，写 /tmp 应成功
+docker compose exec platform sh -c "touch /app/x || echo 只读生效; touch /tmp/x && echo tmpfs 可写"
+```
+
+> `ldap` 服务（`--profile dev`）用的是上游 `osixia/openldap` 镜像，其入口脚本需要 `CAP_CHOWN`/`setuid`，
+> 因此**没有**套用这套加固 —— 它只用于开发联调的种子目录，生产连真实 AD 时该服务根本不会启用。
+
 ## 6. 环境变量（容器侧）
+
+以下变量写在 **`.env.docker`**（由 `docker compose --env-file .env.docker` 加载，参见 §3）。
+`.env.docker` 被 `.gitignore` 的 `.env*` 排除；根目录 `.env` 只服务本地开发，别把容器配置写进去。
 
 | 变量 | 必填 | 说明 |
 |---|---|---|
@@ -151,9 +191,9 @@ docker compose logs --tail=50 backup                          # 看历史
 ## 7. 构建、升级与回滚
 
 ```bash
-IMAGE_TAG=v1.2.0 docker compose build          # 构建并打标签
-IMAGE_TAG=v1.2.0 docker compose up -d          # 升级
-IMAGE_TAG=v1.1.0 docker compose up -d          # 回滚（数据在卷里不受影响）
+IMAGE_TAG=v1.2.0 docker compose --env-file .env.docker build   # 构建并打标签
+IMAGE_TAG=v1.2.0 docker compose --env-file .env.docker up -d   # 升级
+IMAGE_TAG=v1.1.0 docker compose --env-file .env.docker up -d   # 回滚（数据在卷里不受影响）
 ```
 
 - **数据库迁移在启动时自动执行**（entrypoint → `node scripts/migrate.mjs`）。执行器按
@@ -172,9 +212,9 @@ IMAGE_TAG=v1.1.0 docker compose up -d          # 回滚（数据在卷里不受�
 - **种子只在空卷首次引导时导入**。改了种子不会补导，需重建目录卷：
 
 ```bash
-docker compose --profile dev rm -sf ldap
+docker compose --env-file .env.docker --profile dev rm -sf ldap
 docker volume rm transfer-approval-platform_ldap-data transfer-approval-platform_ldap-config
-docker compose --profile dev up -d --build ldap
+docker compose --env-file .env.docker --profile dev up -d --build ldap
 ```
 
 > ⚠️ **千万不要 `down -v`** —— 那会把 `platform-db` / `platform-files` 业务数据一起删掉。
@@ -184,6 +224,10 @@ docker compose --profile dev up -d --build ldap
 **容器内配置链路（首启手工配一次）**：用兜底 `local:true` 登录 → PUT `/api/admin/config`
 把认证源指向**服务名** `ldap:389`（`bindDn=cn=admin,dc=example,dc=local`，字段名 `secret`）→
 POST `/api/ldap/sync` → 管理页配角色。
+
+> ⚠️ 这条链路要求首启时 `.env.docker` 里的 `PLATFORM_ADMIN_EMAILS` **先留空**（联调态才有兜底入口）。
+> 认证源与角色配好、`test-bind` 通过后，再填上管理员名单并重建，才算真正退出联调态 ——
+> 一上来就填的话，兜底入口已关而 LDAP 还没配，会没有任何登录路径。
 
 ## 9. 自检与验收
 
@@ -225,7 +269,29 @@ node scripts/e2e-internal-transfer.mjs --base http://127.0.0.1:8787 \
 | `smoke-test.mjs --write` | **26/26** |
 | `backup` sidecar | 热备入库 + 文件增量镜像写入 `/data/backups` 正常 |
 
-### 9.3 上线验收清单
+### 9.3 2026-09-28 加固与生产化配置实测（全绿）
+
+在既有容器上补齐「运行时加固 + 容器独立密钥 + 退出联调态 + 备份产物校验」后的实测结论：
+
+| 项 | 结果 |
+|---|---|
+| `docker compose --env-file .env.docker up -d --build` | 构建成功；`platform`/`backup` 重建后 `Up (healthy)` |
+| 运行时加固 | `ReadonlyRootfs=true`、`CapDrop=["ALL"]`、`SecurityOpt=["no-new-privileges:true"]`、`User=app`；`/app` 写入被拒、`/tmp`（tmpfs）可写 |
+| 容器独立密钥 | `CONFIG_ENCRYPTION_KEY` 与根 `.env` 的开发密钥**不同源**；切换后重新提交 LDAP 配置，密文在新密钥下重加密成功 |
+| LDAP 链路 | `POST /api/ldap/test-bind` 对 `zhangsan` 返回 `matchedBy=search`（服务账号搜索 + 用户 bind 均通）；`POST /api/ldap/sync` 写入 4 人、停用 0 人 |
+| 退出联调态 | `PLATFORM_ADMIN_EMAILS` 配置后 `readyz.adminAllowlistConfigured=true`；`local:true` 兜底登录返回 403；自声明邮箱登录返回 422（要求域密码） |
+| 域账号登录与角色 | `zhangsan` → 管理员、`wangwu` → 审批人、`lisi` → 发起人，均 200 |
+| 备份产物校验 | 容器内 `backup.mjs` 输出「已校验可打开」；sidecar 启动日志显示自动清掉 2 份历史 0 字节产物 |
+| `e2e-internal-transfer.mjs` | **25/25** |
+| `smoke-test.mjs --write` | **26/26** |
+
+> 切换 `CONFIG_ENCRYPTION_KEY` 的正确顺序（**否则会把自己锁在门外**）：
+> ① 先只换密钥、`PLATFORM_ADMIN_EMAILS` 保持为空 → 重建 → 用 `local:true` 兜底会话
+> `PUT /api/admin/config` 把 LDAP 服务账号口令重新提交一次（新密钥下重加密）；
+> ② 验证 `test-bind` + `sync` 通过后，再配置 `PLATFORM_ADMIN_EMAILS` 并重建。
+> 顺序颠倒的话：兜底入口已关、旧密文又解不开，将没有任何登录路径。
+
+### 9.4 上线验收清单
 
 - [ ] 镜像构建成功，`docker compose ps` 显示 `healthy`
 - [ ] 平台容器重启后会话仍有效（验证 `CONFIG_ENCRYPTION_KEY` 未变）
@@ -235,7 +301,8 @@ node scripts/e2e-internal-transfer.mjs --base http://127.0.0.1:8787 \
 - [ ] 未配置/配置 `PLATFORM_ADMIN_EMAILS` 两种状态下，兜底登录与自声明登录的开关行为符合预期
 - [ ] 发送 → 审批 → 收件人下载 → 撤回 全部在页面走通，审计台账哈希链连续
 - [ ] 内容类型防护：改后缀提交被拒（403 格式不正确）、未知类型转人工、三档切换生效
-- [ ] `backup` sidecar 至少成功执行过一次，且备份库能打开
+- [ ] `backup` sidecar 至少成功执行过一次，日志出现「已校验可打开」；备份目录无 0 字节产物
+- [ ] `docker inspect` 复核运行时加固：`ReadonlyRootfs=true`、`CapDrop=["ALL"]`、`no-new-privileges`
 
 ## 10. 常用排障
 
@@ -259,3 +326,6 @@ curl -s http://127.0.0.1:8787/readyz            # 就绪探针（含 dataDir/密
 | 登录被锁定（429） | 等 `LOGIN_LOCK_MINUTES` 分钟，或调 `LOGIN_MAX_FAILURES` |
 | 重启后所有人被登出 | `CONFIG_ENCRYPTION_KEY` 变了；检查 compose 文件与注入的环境变量 |
 | 备份容器一直重启 | 数据库还不存在时 `backup.mjs` 会以非 0 退出（sidecar 的循环里已容错，只记一行日志）；如持续重启看 `docker compose logs backup` |
+| 备份报「校验失败，已删除该产物」 | 写入过程被打断（容器重建/宿主重启）。补跑一次即可；若反复出现，查磁盘是否写满 |
+| 备份日志出现「N 份历史备份未通过校验」 | 历史遗留的坏产物，脚本只告警不自动删（非空的交人工判断）；确认无用后手工删除 |
+| **全新部署后完全无法登录** | `PLATFORM_ADMIN_EMAILS` 已配但 LDAP 认证源还没配：兜底与自声明入口都关了，且没有可用的 LDAP。首启请先留空该变量 → 用兜底入口配好认证源与角色 → 再填上并重建（顺序见 §9.3 提示） |

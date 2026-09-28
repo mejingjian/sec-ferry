@@ -43,15 +43,19 @@
 
 ```bash
 git clone <repo> && cd transfer-approval-platform
-cp .env.docker.example .env
-vi .env                                  # 至少填 CONFIG_ENCRYPTION_KEY 与 PLATFORM_ADMIN_EMAILS
-docker compose up -d --build             # 平台 + 备份 sidecar
-docker compose ps                        # 期待 platform 为 healthy
+cp .env.docker.example .env.docker       # ⚠️ 是 .env.docker；根目录 .env 是本地开发用的，别覆盖
+vi .env.docker                           # 至少填 CONFIG_ENCRYPTION_KEY 与 PLATFORM_ADMIN_EMAILS
+docker compose --env-file .env.docker up -d --build   # 平台 + 备份 sidecar
+docker compose --env-file .env.docker ps              # 期待 platform 为 healthy
 ```
+
+> 容器环境变量一律走 `.env.docker`（`docker compose --env-file .env.docker ...`，或用内置的
+> `npm run docker:up`）。与本地开发共用同一份 `.env` 会把开发密钥带进容器 —— 开发机密钥一旦泄漏，
+> 容器里加密的 LDAP 服务账号口令就跟着失效。
 
 然后完成一次「容器内配置链路」：
 
-1. 浏览器打开平台。若 `.env` 里 `PLATFORM_ADMIN_EMAILS` 已填，用其中一个域名账号 + 域密码登录；
+1. 浏览器打开平台。若 `.env.docker` 里 `PLATFORM_ADMIN_EMAILS` 已填，用其中一个域名账号 + 域密码登录；
    尚未填时可先用「本地管理员」兜底入口进入（联调态）。
 2. 进「LDAP 与权限」，把认证源指向真实 AD：
    服务器地址（容器内用**服务名或 IP，不能用 127.0.0.1**）、端口、Base DN、绑定帐号与密码；
@@ -162,9 +166,9 @@ docker compose exec platform sh -c 'node scripts/migrate.mjs --status'
 ### 7.2 升级与回滚
 
 ```bash
-IMAGE_TAG=v1.2.0 docker compose build
-IMAGE_TAG=v1.2.0 docker compose up -d
-docker compose ps                                 # 确认 healthy
+IMAGE_TAG=v1.2.0 docker compose --env-file .env.docker build
+IMAGE_TAG=v1.2.0 docker compose --env-file .env.docker up -d
+docker compose --env-file .env.docker ps           # 确认 healthy
 
 IMAGE_TAG=v1.1.0 docker compose up -d             # 回滚（数据在卷里，不受影响）
 ```

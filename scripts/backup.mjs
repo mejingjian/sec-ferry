@@ -13,7 +13,8 @@
 //
 // 容器里由 compose 的 backup sidecar 周期性调用（见 docker-compose.yml）。
 
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { closeSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readSync, readdirSync, rmSync, statSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { backup, DatabaseSync } from "node:sqlite";
@@ -72,7 +73,8 @@ function mirror(source, target) {
 function prune(root, prefix, keepCount) {
   if (!existsSync(root)) return 0;
   const entries = readdirSync(root)
-    .filter((name) => name.startsWith(prefix))
+    // 只统计数据库备份本体：否则 -shm/-wal 副产物会各自占掉一个保留名额
+    .filter((name) => name.startsWith(prefix) && name.endsWith(".db"))
     .map((name) => ({ name, mtime: statSync(path.join(root, name)).mtimeMs }))
     .sort((a, b) => b.mtime - a.mtime);
   let removed = 0;
@@ -81,6 +83,90 @@ function prune(root, prefix, keepCount) {
     removed += 1;
   }
   return removed;
+}
+
+/**
+ * 备份产物校验：光看「命令没报错」不等于备份可用。
+ * 进程若在写入过程中被杀（容器重建 / 宿主重启），会留下 0 字节或半成品文件，
+ * 而它照样能被保留策略当成一份有效备份占位 —— 需要恢复时才发现是空的。
+ * 因此这里强制：非空 + SQLite 文件头 + 完整性检查通过 + 迁移表存在。
+ *
+ * 校验在临时副本上进行：直接在备份目录打开会生成 -shm/-wal 副产物污染备份；
+ * 若备份输出目录本身只读，原地打开还会误判失败。
+ */
+function verifyBackup(file) {
+  const size = statSync(file).size;
+  if (size === 0) throw new Error("备份产物为 0 字节");
+
+  const head = Buffer.alloc(16);
+  const fd = openSync(file, "r");
+  try {
+    readSync(fd, head, 0, 16, 0);
+  } finally {
+    closeSync(fd);
+  }
+  if (head.toString("latin1") !== "SQLite format 3\u0000") throw new Error("不是有效的 SQLite 文件头");
+
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "backup-verify-"));
+  try {
+    const tmpFile = path.join(tmpDir, "copy.db");
+    copyFileSync(file, tmpFile);
+    const db = new DatabaseSync(tmpFile, { readOnly: true });
+    try {
+      const row = db.prepare("PRAGMA quick_check").get();
+      const verdict = String(Object.values(row)[0] ?? "").toLowerCase();
+      if (verdict !== "ok") throw new Error(`完整性检查未通过：${verdict || "(无返回)"}`);
+      const table = db
+        .prepare("SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name='__platform_migrations'")
+        .get();
+      if (!table.c) throw new Error("缺少 __platform_migrations 表，疑似空库或半成品");
+    } finally {
+      db.close();
+    }
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+  return size;
+}
+
+/**
+ * 巡检历史备份：删掉确定无意义的 0 字节产物与校验留下的副产物，其余不合法产物只告警不删
+ * （非空但不合法的文件可能是别的原因造成的，交人工判断，不做自动销毁）。
+ */
+function sweepEmptyBackups(root) {
+  if (!existsSync(root)) return { removed: 0, suspect: [] };
+  const removed = [];
+  const suspect = [];
+  for (const name of readdirSync(root)) {
+    const full = path.join(root, name);
+    // 校验副产物：-shm 可直接删；-wal 仅在 0 字节时删（非空意味着可能有未合并数据，保守处理）
+    if (/^platform-.*\.db-shm$/.test(name)) {
+      rmSync(full, { force: true });
+      removed.push(name);
+      continue;
+    }
+    if (/^platform-.*\.db-wal$/.test(name)) {
+      if (statSync(full).size === 0) {
+        rmSync(full, { force: true });
+        removed.push(name);
+      } else {
+        suspect.push(name);
+      }
+      continue;
+    }
+    if (!/^platform-.*\.db$/.test(name)) continue;
+    if (statSync(full).size === 0) {
+      rmSync(full, { force: true });
+      removed.push(name);
+      continue;
+    }
+    try {
+      verifyBackup(full);
+    } catch {
+      suspect.push(name);
+    }
+  }
+  return { removed: removed.length, suspect };
 }
 
 async function main() {
@@ -93,12 +179,18 @@ async function main() {
   const started = Date.now();
   mkdirSync(outRoot, { recursive: true });
 
-  // 1) 数据库热备
+  // 1) 数据库热备（写完立即校验，不合格的产物当场删除并让本次备份失败）
   const dbOutDir = path.join(outRoot, "db");
   mkdirSync(dbOutDir, { recursive: true });
   const dbOut = path.join(dbOutDir, `platform-${stamp}.db`);
   await backup(new DatabaseSync(dbFile, { readOnly: true }), dbOut);
-  const dbSize = statSync(dbOut).size;
+  let dbSize;
+  try {
+    dbSize = verifyBackup(dbOut);
+  } catch (error) {
+    rmSync(dbOut, { force: true });
+    throw new Error(`数据库备份校验失败，已删除该产物：${error instanceof Error ? error.message : String(error)}`);
+  }
 
   // 2) 隔离区文件镜像（可关闭）
   let fileStat = { copied: 0, skipped: 0 };
@@ -108,16 +200,22 @@ async function main() {
     fileStat = mirror(filesDir, path.join(outRoot, "files"));
   }
 
+  // 3) 清理：先前遗留的空产物 + 超出保留数量的旧备份
+  const sweep = sweepEmptyBackups(dbOutDir);
   const removed = prune(dbOutDir, "platform-", keep);
 
   const seconds = ((Date.now() - started) / 1000).toFixed(1);
   console.log(
     [
       `备份完成（${seconds}s）`,
-      `  数据库：${dbOut}（${(dbSize / 1024 / 1024).toFixed(2)} MB）`,
+      `  数据库：${dbOut}（${(dbSize / 1024 / 1024).toFixed(2)} MB，已校验可打开）`,
       includeFiles ? `  文件  ：镜像新增/更新 ${fileStat.copied} 个，未变更 ${fileStat.skipped} 个` : "  文件  ：已跳过（--no-files）",
-      removed ? `  清理  ：删除 ${removed} 份超出保留数量的旧数据库备份` : "  清理  ：无需清理",
-    ].join("\n"),
+      `  清理  ：${[
+        sweep.removed ? `删除历史空产物 ${sweep.removed} 份` : "",
+        removed ? `删除超期备份 ${removed} 份` : "",
+      ].filter(Boolean).join("；") || "无需清理"}`,
+      sweep.suspect.length ? `  ⚠️ 告警：${sweep.suspect.length} 份历史备份未通过校验，请人工确认：${sweep.suspect.join(", ")}` : "",
+    ].filter(Boolean).join("\n"),
   );
 }
 

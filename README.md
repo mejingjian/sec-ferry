@@ -45,9 +45,10 @@ npm run local:start    # 产物过期会自动重建 → 迁移 → 起服务
 ### 3) Docker Compose
 
 ```bash
-cp .env.docker.example .env          # 至少填 CONFIG_ENCRYPTION_KEY
-docker compose up -d --build         # 平台 + 备份 sidecar
-docker compose --profile dev up -d   # 额外带一个测试用 LDAP（生产请连真实 AD）
+cp .env.docker.example .env.docker   # 至少填 CONFIG_ENCRYPTION_KEY（别覆盖根 .env，那是本地开发用的）
+docker compose --env-file .env.docker up -d --build         # 平台 + 备份 sidecar
+docker compose --env-file .env.docker --profile dev up -d   # 额外带一个测试用 LDAP（生产请连真实 AD）
+# 或用内置 npm 脚本（已带 --env-file）：npm run docker:up / npm run docker:up:dev
 ```
 
 详见 `DOCKER-DEPLOYMENT.md`。

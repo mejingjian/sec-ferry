@@ -21,9 +21,9 @@
     "local:reset": "node scripts/reset-demo-data.mjs",
     "smoke": "node scripts/smoke-test.mjs",
     "e2e": "node scripts/e2e-internal-transfer.mjs",
-    "docker:build": "docker compose build",
-    "docker:up": "docker compose up -d",
-    "docker:up:dev": "docker compose --profile dev up -d",
+    "docker:build": "docker compose --env-file .env.docker build",
+    "docker:up": "docker compose --env-file .env.docker up -d",
+    "docker:up:dev": "docker compose --env-file .env.docker --profile dev up -d",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f --tail=100",
     "docker:smoke": "node scripts/smoke-test.mjs --base http://127.0.0.1:8787 --write"

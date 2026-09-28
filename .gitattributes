@@ -1,0 +1,43 @@
+# 行尾与二进制属性 —— 让「换行符」这件事由 git 强制，而不是靠人记住。
+#
+# 背景：本项目的 PowerShell 脚本强依赖 UTF-8 BOM + CRLF。历史上曾出现
+# scripts/stop-dev-server.ps1 是无 BOM 的 LF 文件，结果中文被当成 ANSI 读、
+# PowerShell Parser 直接报 4 处语法错、脚本一跑就废。跨平台协作者（Linux/macOS）
+# 或换个编辑器就可能再次制造同样的问题，所以这里显式声明。
+#
+# 注意：BOM **无法**由 .gitattributes 保证（它只管行尾），BOM 需要靠
+# `npm run check:encoding` 做字节级校验。
+#
+# 刻意不使用 `* text=auto`：那会在首次生效时把全仓库文件重新规范化，
+# 产生一个巨大的无意义 diff。这里只声明确实需要的规则。
+
+# PowerShell：CRLF（强制）
+*.ps1  text eol=crlf
+*.psm1 text eol=crlf
+
+# 其余脚本与源码：LF
+*.sh   text eol=lf
+*.mjs  text eol=lf
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.js   text eol=lf
+*.jsx  text eol=lf
+
+# 配置与文档：LF
+*.json text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.sql  text eol=lf
+*.md   text eol=lf
+*.ldif text eol=lf
+
+# 二进制：不做任何转换
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.woff  binary
+*.woff2 binary
+*.db    binary
+*.sqlite binary

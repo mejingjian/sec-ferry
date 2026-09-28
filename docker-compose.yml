@@ -1,8 +1,12 @@
 # 文件安全收发平台 —— 一套环境一条命令起起来。
 #
-#   cp .env.docker.example .env        # 填好密钥（至少 CONFIG_ENCRYPTION_KEY）
-#   docker compose up -d --build       # 平台 + 备份 sidecar
-#   docker compose --profile dev up -d # 额外带一个测试用 LDAP（生产连内网真实 AD，不要用）
+#   cp .env.docker.example .env.docker                      # 填好密钥（至少 CONFIG_ENCRYPTION_KEY）
+#   docker compose --env-file .env.docker up -d --build                   # 平台 + 备份 sidecar
+#   docker compose --env-file .env.docker --profile dev up -d             # 额外带一个测试用 LDAP（生产连内网真实 AD，不要用）
+#
+# ⚠️ 容器只读 .env.docker，**不要**复用仓库根的 .env —— 那是本地开发用的。
+#    两者共用同一把密钥，会让「开发机密钥泄漏」直接波及容器里加密的 LDAP 口令。
+#    仓库根的 .env 与 .env.docker 各管一套，互不影响。
 #
 # 数据按用途拆成三个卷，备份边界因此变得明确：
 #   platform-db      /data/db      —— SQLite 主库（含 WAL）
@@ -46,6 +50,19 @@ services:
       - platform-db:/data/db
       - platform-files:/data/files
       - platform-backups:/data/backups
+    # ---------- 运行时加固 ----------
+    # 根文件系统只读：镜像即不可变，运行期无法写入 / 篡改自身；可写位置只有 /data 卷与下面两处 tmpfs。
+    read_only: true
+    tmpfs:
+      # Next standalone 运行期需要写缓存目录（图片优化 / 数据缓存）与临时目录
+      - /tmp
+      - /app/.next/cache
+    # 丢弃全部 Linux capabilities：监听 8787（>1024）不需要 NET_BIND_SERVICE，容器也不需要任何特权。
+    cap_drop:
+      - ALL
+    # 禁止通过 setuid/setgid 提权
+    security_opt:
+      - no-new-privileges:true
     networks:
       - approval-zone
     ports:
@@ -95,6 +112,14 @@ services:
     # 该容器不提供 HTTP 服务，禁用镜像里继承的 /healthz 探针
     healthcheck:
       disable: true
+    # 与平台容器同等的加固：只读根文件系统，只允许写 /data/backups 卷
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     networks:
       - approval-zone
 
