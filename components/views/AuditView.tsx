@@ -14,6 +14,7 @@ const OBJECT_LABEL: Record<string, string> = {
   LDAP: "LDAP 认证源",
   AUTH: "登录会话",
   CONTENT_TYPE_GUARD: "内容类型防护",
+  SECRET_KEY: "服务端加密密钥",
 }
 const RESULT_LABEL: Record<string, string> = {
   SUCCESS: "成功", FAILED: "失败", DENIED: "已拒绝", DELETED: "已删除",

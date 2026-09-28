@@ -100,6 +100,8 @@ docker compose --env-file .env.docker --profile dev up -d    # 再带一个测�
 
 > `CONFIG_ENCRYPTION_KEY` 不再落盘 —— 它由 Compose 注入环境变量。**请单独离线备份这个值**，
 > 它不在任何卷里，删了 compose 文件等于丢了它。
+> 真丢了不会让平台崩，但库里已存的绑定口令再也解不开 —— 只能清空认证源重新配置
+> （§9.5 方案 B）。这也是「离线备份」要单独强调的原因。
 
 ### 4.1 备份：优先用内置 sidecar，而不是 tar 卷
 
@@ -175,7 +177,7 @@ docker compose exec platform sh -c "touch /app/x || echo 只读生效; touch /tm
 
 | 变量 | 必填 | 说明 |
 |---|---|---|
-| `CONFIG_ENCRYPTION_KEY` | **是** | 会话签名 + LDAP 密码加密。上线后**不可更换**，离线备份 |
+| `CONFIG_ENCRYPTION_KEY` | **是** | 会话签名 + LDAP 密码加密。**可轮换**（`npm run rekey`，见 §9.6），但必须离线备份 |
 | `PLATFORM_ADMIN_EMAILS` | **是**（生产） | 管理员名单。配置后兜底登录/自声明登录同时禁用 |
 | `PLATFORM_APPROVER_EMAILS` / `PLATFORM_AUDITOR_EMAILS` | 建议 | 审批人 / 审计员名单（与「角色管理」页双轨生效） |
 | `DATA_DIR` | 否 | 容器内固定 `/data`（compose 已写死） |
@@ -202,7 +204,9 @@ IMAGE_TAG=v1.1.0 docker compose --env-file .env.docker up -d   # 回滚（数据
 - **新增迁移不再需要改任何清单**：改 `db/schema.ts` → `npm run db:generate` → 重建镜像即可。
   （旧版需要同步维护 `entrypoint-platform.sh` 的 `--files` 与 `local-setup.ps1`，还要升 marker ——
   那套机制已随重构废除。）
-- **`CONFIG_ENCRYPTION_KEY` 不可轮换**：一旦更换，所有会话失效且已存 LDAP 密码无法解密。
+- **`CONFIG_ENCRYPTION_KEY` 可以轮换**：用 `npm run rekey`（见 §9.6）在单事务内把库里所有配置密文
+  重加密到新密钥。**不要**手工只改环境变量 —— 那会留下一批解不开的旧密文。
+  轮换后所有会话失效（会话 Cookie 也用这把密钥签名），需重新登录，这是预期行为。
 
 ## 8. LDAP 测试目录（`--profile dev`）
 
@@ -285,7 +289,8 @@ node scripts/e2e-internal-transfer.mjs --base http://127.0.0.1:8787 \
 | `e2e-internal-transfer.mjs` | **25/25** |
 | `smoke-test.mjs --write` | **26/26** |
 
-> 切换 `CONFIG_ENCRYPTION_KEY` 的正确顺序（**否则会把自己锁在门外**）：
+> 换 `CONFIG_ENCRYPTION_KEY` 现在有工具支持（见 §9.6）：`npm run rekey` 会把库里所有密文一步重加密，
+> 不必手工重提交口令。下面这套手工顺序仍然有效，适用于**还没有密文**（首次部署）或作为备用手段：
 > ① 先只换密钥、`PLATFORM_ADMIN_EMAILS` 保持为空 → 重建 → 用 `local:true` 兜底会话
 > `PUT /api/admin/config` 把 LDAP 服务账号口令重新提交一次（新密钥下重加密）；
 > ② 验证 `test-bind` + `sync` 通过后，再配置 `PLATFORM_ADMIN_EMAILS` 并重建。
@@ -303,6 +308,7 @@ node scripts/e2e-internal-transfer.mjs --base http://127.0.0.1:8787 \
 - [ ] 内容类型防护：改后缀提交被拒（403 格式不正确）、未知类型转人工、三档切换生效
 - [ ] `backup` sidecar 至少成功执行过一次，日志出现「已校验可打开」；备份目录无 0 字节产物
 - [ ] `docker inspect` 复核运行时加固：`ReadonlyRootfs=true`、`CapDrop=["ALL"]`、`no-new-privileges`
+- [ ] 密钥轮换可用：`npm run test:rekey` 全部通过；容器内 `docker compose exec platform node scripts/rekey.mjs` 能跑出只读审计
 - [ ] 故意制造一次配置错误，确认启动前自检会以可读的中文提示阻止启动（见 §9.5）
 
 ### 9.5 锁死后如何恢复（break-glass）
@@ -330,7 +336,7 @@ npm run admin:inspect        # 等价于 node --env-file-if-exists=.env scripts/
 |---|---|---|
 | **A. 临时清空管理员名单**（推荐，不动数据） | 通用 | 把 `PLATFORM_ADMIN_EMAILS` 临时置空 → 重建容器 → 用页面上的兜底管理员进入「LDAP 与权限」重新配置认证源 → 配好后再把名单填回来并重建 |
 | **B. 清掉坏掉的认证源配置** | 认证源已无法修复 | `node scripts/reset-admin.mjs --clear-ldap --yes`，再按方案 A 进入页面重配 |
-| **C. 换回原密钥** | 确认是换过密钥导致密文解不开 | 恢复原来的 `CONFIG_ENCRYPTION_KEY` 重建即可（密钥不可轮换，所以这一步只能「换回去」） |
+| **C. 用旧密钥把密文重加密回当前密钥** | 确认是换过密钥导致密文解不开 | `npm run rekey -- --old-key <加密它们的那把> --new-key <当前环境用的> --yes`（见 §9.6）。**不必**清配置重填口令 |
 | **D. 直接补一个管理员** | 只是角色丢了 | `node scripts/reset-admin.mjs --grant you@corp.local`（前提是 LDAP 可达，否则仍登不进去） |
 
 > ⚠️ **顺序不能颠倒**：必须**先填好认证源，再配置 `PLATFORM_ADMIN_EMAILS`**。
@@ -341,6 +347,52 @@ npm run admin:inspect        # 等价于 node --env-file-if-exists=.env scripts/
 密钥是否缺失或仍是占位符、数据目录是否可写、以及**「已配管理员名单但认证源为空」这个死局**。
 不通过时以可读的中文提示阻止启动（紧急情况可用 `SKIP_PREFLIGHT=1` 绕过）。
 这样问题的表现形式就是「容器起不来 + 明确原因」，而不是「登录莫名其妙失败」。
+
+### 9.6 密钥轮换（rekey）
+
+`CONFIG_ENCRYPTION_KEY` 用在两处：配置密文（LDAP 绑定口令、SMTP 发信口令）与会话 Cookie 签名。
+它**可以轮换** —— `scripts/rekey.mjs` 会在单个事务里把库里所有密文从旧密钥重加密到新密钥。
+（此前这一步只能「换回去」或重建环境，密钥泄漏时没有补救手段。）
+
+```bash
+# 容器部署的推荐顺序
+npm run rekey                                              # ① 只读审计：列出密文，判定当前密钥能否解开
+docker compose --env-file .env.docker stop platform        # ② 停平台（见下方「为什么必须先停」）
+docker compose --env-file .env.docker run --rm platform \
+  node scripts/rekey.mjs --generate --env-file /data/rekey.env --yes   # ③ 生成新密钥并轮换
+# ④ 把新密钥填进 .env.docker 的 CONFIG_ENCRYPTION_KEY，再 up -d
+```
+
+> 容器是只读根文件系统，`--env-file` 写不进 `/app`。更省事的做法是在宿主机跑 `npm run rekey`
+> 并用 `--env-file .env.docker` 就地更新，或用 `docker compose exec platform node scripts/rekey.mjs`
+> 配合 `--print-key`，把密钥手工填进 `.env.docker`。
+
+**为什么必须先停平台**：正在运行的进程会把解出来的口令缓存在内存里，并在下次保存配置时
+**用旧密钥**重新加密 —— 那会在轮换后再写入一份旧密钥密文。脚本会探测 8787 端口并在发现平台
+仍在运行时显著告警，但不会替你停它。
+
+**脚本替你做的事**（都是手工容易漏的）：
+
+| 步骤 | 说明 |
+|---|---|
+| 写前快照 | 复用与备份同一份逻辑生成**已校验**的数据库快照（`platform-prerekey-*.db`）；快照失败即拒绝动手 |
+| 事务内重加密 | 全部密文先解密成功才开写；任一步失败整体 `ROLLBACK`，不留「一半新一半旧」的库 |
+| 写前自校验 | 每条新密文先解回原文比对通过才落库 |
+| 提交后复核 | 从库里读回，逐条确认「新密钥可解、旧密钥不可解」 |
+| 审计留痕 | 与本次变更**同事务**写入 `audit_events`（对象 `SECRET_KEY`），哈希链接在既有链之后 |
+| 兜底扫描 | 全库扫描「像密文但未登记」的字段并告警 |
+| 配置回写 | `--env-file` 指定时把新密钥写回该文件，并留一份 `.bak-<时间戳>` |
+
+**新增加密字段时必须登记**：`scripts/rekey.mjs` 顶部的 `CIPHERTEXT_TARGETS`。
+漏登记不会报错，只会表现为「轮换后某个配置读不出来」—— 所以脚本会做上面那条兜底扫描。
+
+**其他**：
+
+- 会话 Cookie 也由这把密钥签名，轮换后所有人被登出、需重新登录（预期行为）。
+- 命令行传密钥会留在 shell 历史里：优先用 `--generate`，或用 `--new-key-file <path>`。
+- 密文格式是 `<24位hex IV>.<密文hex>`，改动格式会让存量密文全部解不开 —— `npm run test:rekey`
+  里有一条格式契约断言专门守这个。
+- 回归：`npm run test:rekey` —— 它用**全新空库 + 人造密文**演练，不碰真实数据，可随时跑。
 
 ## 10. 常用排障
 

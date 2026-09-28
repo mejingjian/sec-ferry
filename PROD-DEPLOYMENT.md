@@ -34,7 +34,8 @@
 
 - [ ] 服务器已装 Docker + Compose；磁盘按「文件量 × 保留期」预留，并给备份卷留同等空间
 - [ ] 与应用网段之间的 443 通；平台到目录服务的 389/636 通
-- [ ] 已生成 `CONFIG_ENCRYPTION_KEY`（`openssl rand -hex 32`）并**离线备份**（它不在任何卷里）
+- [ ] 已生成 `CONFIG_ENCRYPTION_KEY`（`openssl rand -hex 32`）并**离线备份**（它不在任何卷里）。丢失只能清空认证源重配
+- [ ] 已确认密钥轮换路径可用：`npm run test:rekey` 通过（上线后如需轮换，见 `DOCKER-DEPLOYMENT.md` §9.6）
 - [ ] 已确定管理员域名名单（`PLATFORM_ADMIN_EMAILS`）—— 生产必配，否则等于人人可自声明登录
 - [ ] 已确认 `QUARANTINE_RETENTION_DAYS` 与本单位合规要求一致
 - [ ] 若 LDAPS 用自签名证书，确认 `LDAP_TLS_REJECT_UNAUTHORIZED=false`（或换成受信证书后设 true）
@@ -68,7 +69,7 @@ docker compose --env-file .env.docker ps              # 期待 platform 为 heal
 
 | 变量 | 必填 | 默认 | 说明 |
 |---|---|---|---|
-| `CONFIG_ENCRYPTION_KEY` | **是** | — | 会话签名 + LDAP 密码加密。**上线后不可更换**，离线备份 |
+| `CONFIG_ENCRYPTION_KEY` | **是** | — | 会话签名 + LDAP 密码加密。**可轮换**（`npm run rekey`），仍须离线备份 |
 | `PLATFORM_ADMIN_EMAILS` | **是** | — | 管理员名单（逗号分隔）。配置后兜底/自声明登录同时失效 |
 | `PLATFORM_APPROVER_EMAILS` | 建议 | — | 审批人名单 |
 | `PLATFORM_AUDITOR_EMAILS` | 建议 | — | 审计员名单 |

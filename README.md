@@ -84,7 +84,7 @@ node scripts/backup.mjs --out /mnt/bak  # 输出到备份盘
 
 | 变量 | 必填 | 说明 |
 | --- | --- | --- |
-| `CONFIG_ENCRYPTION_KEY` | ✅ | 会话签名 + LDAP 密码加密；**上线后不可轮换** |
+| `CONFIG_ENCRYPTION_KEY` | ✅ | 会话签名 + LDAP 密码加密。**可轮换**，用 `npm run rekey` |
 | `PLATFORM_ADMIN_EMAILS` | 生产必填 | 配了就只剩 LDAP 一条登录路径，本地兜底登录同时失效 |
 | `PLATFORM_APPROVER_EMAILS` / `PLATFORM_AUDITOR_EMAILS` | | 角色名单（逗号分隔） |
 | `DATA_DIR` | | 数据根目录，默认 `<应用根>/.local-data`（容器里为 `/data`） |
@@ -131,7 +131,15 @@ node scripts/reset-admin.mjs --clear-ldap --yes    # 清空坏掉的认证源配
 node scripts/reset-admin.mjs --grant you@corp.local
 ```
 
-完整恢复流程（含顺序陷阱）见 `DOCKER-DEPLOYMENT.md` §9.5「锁死后如何恢复」。
+如果是**换过密钥**导致口令解不开，别急着清配置重填 —— 用轮换工具把密文改回「当前环境所用的那把密钥」即可：
+
+```bash
+npm run rekey                                          # 只读审计：列出密文，判定当前密钥能否解开
+npm run rekey -- --old-key <加密它们的那把> --new-key <当前环境用的> --yes
+```
+
+完整恢复流程（含顺序陷阱）见 `DOCKER-DEPLOYMENT.md` §9.5「锁死后如何恢复」，
+密钥轮换的完整说明见 §9.6。
 
 ## 代码检查
 
@@ -154,6 +162,7 @@ npm run verify    # lint + typecheck + PowerShell 编码约定
 | `node scripts/verify-content-type.mjs --mock-ldap` | 内容防伪装（TC-01~TC-12） | 26 |
 | `node scripts/smoke-test.mjs --write` | 接口契约 + 可见性口径 | 26 |
 | `node scripts/test-ldap-login.mjs` | 配认证源 → 同步 → 登录 → 锁定 | 18 |
+| `node scripts/test-rekey.mjs` | 密钥轮换（只读审计/轮换/往返/审计链），**不碰真实数据** | 40 |
 
 `--mock-ldap` 会自动把认证源临时指向本地 mock LDAP（先起 `node scripts/mock-ldap-server.mjs --port 3890`），
 跑完**自动还原**原配置。mock 目录约定：**普通用户口令 = 账号名**。

@@ -250,7 +250,8 @@ GET  /readyz                                   # 就绪探针（查库 + 存储�
 
 ## 12. 测试与回归脚本（scripts/）
 
-> 全部是**真实写入**的回归，只允许打开发/验收环境，禁止对生产执行。
+> 除 `test-rekey.mjs` 外都是**真实写入**的回归，只允许打开发/验收环境，禁止对生产执行。
+> （`test-rekey.mjs` 用全新空库 + 人造密文演练，不碰真实数据，可随时跑。）
 
 | 脚本 | 内容 | 备注 |
 |---|---|---|
@@ -259,6 +260,7 @@ GET  /readyz                                   # 就绪探针（查库 + 存储�
 | `verify-content-type.mjs` | 26 项内容防护 | 收件人可用 `E2E_RECIPIENT_EMAIL` 环境变量回退 |
 | `test-ldap-login.mjs` | 18 项 LDAP 登录 | **zhaoliu 会触发锁定 15 分钟**，别频繁跑 |
 | `check-sha256.mjs` | 11 项流式哈希自检 | |
+| `test-rekey.mjs` | 40 项密钥轮换：只读审计/计划/旧密钥错误拒绝/正式轮换+快照+复核/往返/格式契约/审计链连续性 | **不写真实数据**（建临时空库并自动清理）；`npm run test:rekey` |
 | `test-mail-notify.mjs` | 邮件通知闭环（SMTP 配置/测试发送/故障不阻断/积压补发/审批+收件通知） | 内嵌 mock SMTP（127.0.0.1:2525）；容器实例默认 `--smtp-host host.docker.internal`，本地实例传 `127.0.0.1`；结束自动还原邮件配置 |
 | `mock-ldap-server.mjs` | 本地 mock LDAP | `node scripts/mock-ldap-server.mjs --port 3890`，口令=账号名 |
 | `migrate.mjs` | 迁移 CLI | `--status` 只打印已应用/待应用 |
@@ -301,7 +303,7 @@ npm run docker:smoke
 
 | 变量 | 说明 |
 |---|---|
-| `CONFIG_ENCRYPTION_KEY` | integration_settings 加密 + 会话签名，**不可轮换**（换了旧配置全解不开、所有会话失效） |
+| `CONFIG_ENCRYPTION_KEY` | integration_settings 加密 + 会话签名。**可轮换**：`npm run rekey`（加解密实现与轮换工具共用 `db/crypto.mjs`） |
 | `PLATFORM_ADMIN_EMAILS` | 生产必配；配置后本地自声明登录关闭，只剩 LDAP |
 | `DATA_DIR` | 数据根目录（容器 `/data`） |
 | `DB_FILE` / `FILES_DIR` / `MIGRATIONS_DIR` | 覆盖库文件 / 文件目录 / 迁移目录 |
@@ -357,7 +359,8 @@ npm run docker:smoke
    （全新库里还没有 LDAP 绑定密码，回归脚本会自动写一个占位口令）。
 3. 改代码：`npm run build` → 重启（或 `npm run dev` 热更）；改 schema：走 §6 流程
    （只需 `db:generate`，不再改任何清单）。
-4. 提交前跑四套回归（e2e / smoke / verify-content-type / test-ldap-login）确认全绿。
+4. 提交前跑回归确认全绿：`npm run test:rekey`（不需要平台）+ 四套需要平台的
+   （e2e / smoke / verify-content-type / test-ldap-login）。
 
 ---
 

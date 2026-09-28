@@ -16,7 +16,7 @@
 import { closeSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readSync, readdirSync, rmSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { backup, DatabaseSync } from "node:sqlite";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -130,6 +130,33 @@ function verifyBackup(file) {
 }
 
 /**
+ * 生成一份**已校验**的数据库快照，返回产物路径与字节数。
+ *
+ * 任何「改动前先留退路」的流程（定期备份、密钥轮换）都应调用本函数，而不是各自
+ * `copyFileSync` —— WAL 模式下直接拷主库文件会漏掉尚未 checkpoint 的写入，
+ * 恢复时才发现在最需要的那一次备份里少了最近的变更。走 SQLite 官方在线备份 API
+ * 可以不停服拿到一致快照。
+ *
+ * 导出以便 `scripts/rekey.mjs` 复用：轮换密钥属于不可逆操作，同样要求写前有可校验的退路。
+ *
+ * @param {{ source?: string, outDir: string, prefix?: string }} options
+ * @returns {Promise<{ file: string, size: number }>}
+ */
+export async function snapshotDatabase({ source = dbFile, outDir, prefix = "platform-" }) {
+  if (!existsSync(source)) throw new Error(`数据库不存在，无法快照：${source}`);
+  mkdirSync(outDir, { recursive: true });
+  const file = path.join(outDir, `${prefix}${timestamp()}.db`);
+  await backup(new DatabaseSync(source, { readOnly: true }), file);
+  try {
+    return { file, size: verifyBackup(file) };
+  } catch (error) {
+    // 不合格的产物当场删除：留着会占掉保留名额，还在最需要的时候伪装成一份可用备份
+    rmSync(file, { force: true });
+    throw new Error(`数据库快照校验失败，已删除该产物：${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/**
  * 巡检历史备份：删掉确定无意义的 0 字节产物与校验留下的副产物，其余不合法产物只告警不删
  * （非空但不合法的文件可能是别的原因造成的，交人工判断，不做自动销毁）。
  */
@@ -175,22 +202,14 @@ async function main() {
     process.exit(1);
   }
 
-  const stamp = timestamp();
   const started = Date.now();
   mkdirSync(outRoot, { recursive: true });
 
   // 1) 数据库热备（写完立即校验，不合格的产物当场删除并让本次备份失败）
   const dbOutDir = path.join(outRoot, "db");
-  mkdirSync(dbOutDir, { recursive: true });
-  const dbOut = path.join(dbOutDir, `platform-${stamp}.db`);
-  await backup(new DatabaseSync(dbFile, { readOnly: true }), dbOut);
-  let dbSize;
-  try {
-    dbSize = verifyBackup(dbOut);
-  } catch (error) {
-    rmSync(dbOut, { force: true });
-    throw new Error(`数据库备份校验失败，已删除该产物：${error instanceof Error ? error.message : String(error)}`);
-  }
+  const snapshot = await snapshotDatabase({ outDir: dbOutDir });
+  const dbOut = snapshot.file;
+  const dbSize = snapshot.size;
 
   // 2) 隔离区文件镜像（可关闭）
   let fileStat = { copied: 0, skipped: 0 };
@@ -219,7 +238,12 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  console.error(`备份失败：${error instanceof Error ? error.message : String(error)}`);
-  process.exit(1);
-});
+// 只有「被直接执行」时才跑备份主流程。被其它脚本 import 时（scripts/rekey.mjs 复用
+// snapshotDatabase）不应产生副作用 —— 否则一次密钥轮换会顺手多做一份全量备份。
+const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedDirectly) {
+  main().catch((error) => {
+    console.error(`备份失败：${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  });
+}

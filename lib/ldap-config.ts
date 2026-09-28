@@ -7,6 +7,7 @@ import { env } from "@/lib/env";
 import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { integrationSettings } from "@/db/schema";
+import { decryptSecret as decryptWithKey } from "@/db/crypto.mjs";
 import type { LdapDirectConfig } from "@/lib/ldap-client";
 
 export const LDAP_DEFAULT_TIMEOUT_MS = 10000;
@@ -32,15 +33,13 @@ export async function getLdapSettings(): Promise<LdapSettingsRow | null> {
   return rows[0] ?? null;
 }
 
-/** AES-GCM（密钥 = SHA-256(CONFIG_ENCRYPTION_KEY)）解密配置里的密文 */
+/**
+ * 解密配置里的密文（LDAP 绑定口令、SMTP 口令共用）。
+ * 实现集中在 db/crypto.mjs —— 运行期与 `scripts/rekey.mjs` 密钥轮换工具必须逐字节一致，
+ * 各自维护一份拷贝迟早会漂移成「轮换完平台读不了」。此处只负责绑定密钥来源。
+ */
 export async function decryptSecret(encrypted: string): Promise<string> {
-  if (!env.CONFIG_ENCRYPTION_KEY) throw new Error("服务端加密密钥不可用");
-  const [ivHex, dataHex] = encrypted.split(".");
-  if (!ivHex || !dataHex) throw new Error("密文格式不正确");
-  const fromHex = (value: string) => new Uint8Array(value.match(/../g)!.map((part) => parseInt(part, 16)));
-  const raw = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(env.CONFIG_ENCRYPTION_KEY));
-  const key = await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
-  return new TextDecoder().decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromHex(ivHex) }, key, fromHex(dataHex)));
+  return decryptWithKey(encrypted, env.CONFIG_ENCRYPTION_KEY);
 }
 
 export function ldapPort(row: LdapSettingsRow): number {

@@ -38,6 +38,11 @@ jobs:
       - name: PowerShell 编码约定
         run: npm run check:encoding
 
+      # 密钥轮换是不可逆操作（原地覆盖密文），必须自动把关。
+      # 它自带临时空库、不碰任何真实数据、也不需要平台在跑。
+      - name: 密钥轮换回归
+        run: npm run test:rekey
+
       - name: 构建（含 standalone 组装）
         run: npm run build
 

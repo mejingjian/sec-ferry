@@ -92,8 +92,9 @@ npm run local:start
 | `node scripts/verify-content-type.mjs --mock-ldap` | 内容防伪装（TC-01~TC-12） | 26 |
 | `node scripts/smoke-test.mjs` + 三角色账号与口令 + `--write` | 接口契约 + 可见性 | 26 |
 | `node scripts/test-ldap-login.mjs` | 配认证源 → 同步 → 登录 → 锁定 | 18 |
+| `node scripts/test-rekey.mjs` | 密钥轮换全路径（**不写真实数据**，可随时跑） | 40 |
 
-- 这些脚本会**真实写入**数据，只对本地/验收环境跑。
+- 这些脚本会**真实写入**数据，只对本地/验收环境跑（`test-rekey.mjs` 例外，它自带临时空库）。
 - 口令默认取账号名（mock 约定），可用 `--requester-password` 等参数覆盖。
 - `test-ldap-login.mjs` 的失败锁定用例会把 `zhaoliu` 锁 15 分钟，**放最后跑**。
 - `--mock-ldap` 需要 mock LDAP 已在 3890 监听。

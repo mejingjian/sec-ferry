@@ -7,17 +7,14 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { integrationSettings } from "@/db/schema";
+import { encryptSecret } from "@/db/crypto.mjs";
 import { appendAudit, requireAdministrator, serverError } from "@/lib/server";
 import { env } from "@/lib/env";
 import { getSmtpConfig, mailOutboxStats, processMailOutbox, smtpDeliver } from "@/lib/mail";
 
-async function encrypt(secret: string) {
-  if (!env.CONFIG_ENCRYPTION_KEY) throw new Error("尚未配置服务端加密密钥");
-  const raw = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(env.CONFIG_ENCRYPTION_KEY));
-  const key = await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt"]);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(secret));
-  return `${Array.from(iv).map((v) => v.toString(16).padStart(2, "0")).join("")}.${Array.from(new Uint8Array(encrypted)).map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+/** AES-GCM 加密。实现见 db/crypto.mjs —— 与 `npm run rekey` 的密钥轮换共用同一份口径。 */
+function encrypt(secret: string) {
+  return encryptSecret(secret, env.CONFIG_ENCRYPTION_KEY);
 }
 
 export async function GET(request: Request) {

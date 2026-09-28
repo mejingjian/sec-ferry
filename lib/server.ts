@@ -2,6 +2,7 @@ import { env } from "@/lib/env";
 import { and, desc, eq, isNotNull, lt, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { applications, applicationRecipients, auditEvents, downloadDeliveries, downloadEvents, roleAssignments, rules } from "@/db/schema";
+import { auditHash } from "@/db/audit-chain.mjs";
 import { readSession } from "@/lib/session";
 import { createFileBucket, type FileBucket } from "@/lib/storage";
 import { dispatchMailOutbox, notifyDelivered } from "@/lib/mail";
@@ -86,9 +87,9 @@ export async function appendAudit(actor: Actor, action: string, objectId: string
   const previous = await db.select().from(auditEvents).orderBy(desc(sql`rowid`)).limit(1);
   const at = new Date().toISOString();
   const previousHash = previous[0]?.hash ?? null;
-  const payload = `${previousHash ?? "GENESIS"}|${at}|${actor.id}|${action}|${objectId}|${result}|${detail ?? ""}`;
-  const hashBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(payload));
-  const hash = Array.from(new Uint8Array(hashBytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  // 载荷拼接与 hash 计算见 db/audit-chain.mjs —— 运维 CLI（reset-admin / rekey）写审计时
+  // 必须用同一份实现，否则链会从那条开始断掉。（此前这段拼接只存在于这里。）
+  const hash = await auditHash({ previousHash, at, actorId: actor.id, action, objectId, result, detail });
   await db.insert(auditEvents).values({ id: crypto.randomUUID(), at, actorId: actor.id, actorEmail: actor.email, actorDisplay: actor.display, action, objectId, result, detail, previousHash, hash });
   return hash;
 }
