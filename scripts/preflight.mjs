@@ -12,7 +12,7 @@
 //
 // 容器里由 docker/entrypoint-platform.sh 在「迁移之后、启动服务之前」调用。
 
-import { accessSync, constants, existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -55,20 +55,38 @@ if (!key) {
 }
 
 // ---------- 2) 数据目录可写 ----------
+// ⚠️ 不能检查 DATA_DIR 本身。在「只读根文件系统 + 三个卷分别挂到子目录」的部署下
+//    （本项目的容器就是这样），DATA_DIR（/data）**本身就是只读的**，可写的是它下面
+//    的 db / files / backups 三个卷。/data 上 touch 会直接得到 EROFS。
+//    早先这里查的是 DATA_DIR 自己，结果把完全正常的容器判成「数据目录不可写」——
+//    自检工具自己制造了误报，比不检查更糟。
 const dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(projectRoot, ".local-data");
 const dbFile = process.env.DB_FILE ? path.resolve(process.env.DB_FILE) : path.join(dataDir, "db", "platform.db");
-try {
-  mkdirSync(path.join(dataDir, "db"), { recursive: true });
-  mkdirSync(path.join(dataDir, "files"), { recursive: true });
-  mkdirSync(path.join(dataDir, "backups"), { recursive: true });
-  accessSync(dataDir, constants.W_OK);
-  notes.push(`数据目录可写（${dataDir}）`);
-} catch (e) {
-  err(
-    `数据目录不可写：${dataDir}`,
-    String((e && e.message) || e),
-    "检查卷挂载与权限。容器里应为 /data；注意只读根文件系统下只有 /data 与 tmpfs 可写。",
-  );
+
+const writableTargets = [
+  ["数据库目录", path.dirname(dbFile)],
+  ["文件目录", process.env.FILES_DIR ? path.resolve(process.env.FILES_DIR) : path.join(dataDir, "files")],
+  ["备份目录", path.join(dataDir, "backups")],
+];
+
+for (const [label, dir] of writableTargets) {
+  try {
+    mkdirSync(dir, { recursive: true });
+    // 真正写一个探针文件来判断可写性 —— 比 accessSync(W_OK) 可靠：
+    // access 在只读挂载点上返回 EROFS，而对「已存在」的目录 mkdir 又不会报错，
+    // 两者都容易给出与事实相反的结论。
+    const probe = path.join(dir, `.preflight-${process.pid}.tmp`);
+    writeFileSync(probe, "ok");
+    rmSync(probe, { force: true });
+    notes.push(`${label}可写（${dir}）`);
+  } catch (e) {
+    err(
+      `${label}不可写：${dir}`,
+      String((e && e.message) || e),
+      "检查卷是否正确挂载。容器里 db/files/backups 是三个独立卷 —— " +
+        "只读根文件系统下只有这些卷与 tmpfs 可写，父目录 /data 本身不可写是正常的。",
+    );
+  }
 }
 
 // ---------- 3) 登录路径（最容易把运维锁死的地方）----------
