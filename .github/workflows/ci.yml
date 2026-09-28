@@ -1,0 +1,100 @@
+name: CI
+
+# 开源后每个 PR 都要有自动把关 —— 回归脚本本身很齐备（6 个脚本、100+ 用例，
+# 且都支持 --base / --mock-ldap），接入成本很低，不做就太可惜了。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: 静态检查与构建
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.13"
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      # 项目强依赖「.ps1 必须 UTF-8 BOM + CRLF」，这条约定只能靠检查兜住
+      - name: PowerShell 编码约定
+        run: npm run check:encoding
+
+      - name: 构建（含 standalone 组装）
+        run: npm run build
+
+  e2e:
+    name: 端到端回归
+    runs-on: ubuntu-latest
+    needs: verify
+    env:
+      # 仅供 CI 使用的临时密钥（不承载任何真实数据，也不是秘密）
+      CONFIG_ENCRYPTION_KEY: 4f3c2b1a4f3c2b1a4f3c2b1a4f3c2b1a4f3c2b1a4f3c2b1a4f3c2b1a4f3c2b1a
+      DATA_DIR: ${{ github.workspace }}/.ci-data
+      PORT: "8787"
+      HOSTNAME: "127.0.0.1"
+      # 注意：刻意不设 PLATFORM_ADMIN_EMAILS —— 回归脚本依赖「本地兜底管理员」来切换认证源
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.13"
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 构建
+        run: npm run build
+
+      - name: 启动前自检
+        run: npm run preflight
+
+      - name: 起 mock LDAP 与平台，跑端到端回归
+        run: |
+          set -e
+          node scripts/mock-ldap-server.mjs --port 3890 > /tmp/mock-ldap.log 2>&1 &
+          node .next/standalone/server.js > /tmp/platform.log 2>&1 &
+
+          for i in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:8787/healthz > /dev/null 2>&1; then
+              echo "平台已就绪（第 ${i} 次探测）"
+              break
+            fi
+            sleep 1
+          done
+
+          if ! curl -sf http://127.0.0.1:8787/healthz > /dev/null 2>&1; then
+            echo "::error::平台未能启动"
+            tail -80 /tmp/platform.log || true
+            exit 1
+          fi
+
+          node scripts/e2e-internal-transfer.mjs --base http://127.0.0.1:8787 --mock-ldap
+
+      - name: 失败时输出服务日志
+        if: failure()
+        run: |
+          echo "===== platform ====="
+          tail -120 /tmp/platform.log || true
+          echo "===== mock ldap ====="
+          tail -60 /tmp/mock-ldap.log || true

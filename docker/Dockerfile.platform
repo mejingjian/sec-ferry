@@ -38,7 +38,9 @@ ENV NODE_ENV=production \
 COPY --from=builder /app/.next/standalone ./
 # 迁移 CLI：让「启动前迁移」能 fail-fast（应用内也会惰性迁移，两者共用 db/*.mjs 同一份逻辑）
 COPY --from=builder /app/db/migrations.mjs /app/db/sqlite-client.mjs ./db/
-COPY --from=builder /app/scripts/migrate.mjs /app/scripts/backup.mjs ./scripts/
+# preflight.mjs  —— 启动前自检（配置错误在启动那一刻就暴露）
+# reset-admin.mjs—— 应急诊断 / 恢复（不依赖服务进程，平台起不来时也能用）
+COPY --from=builder /app/scripts/migrate.mjs /app/scripts/backup.mjs /app/scripts/preflight.mjs /app/scripts/reset-admin.mjs ./scripts/
 # 备份脚本要能在容器里独立执行（backup sidecar 复用同一镜像）
 COPY --from=builder /app/package.json ./package.json
 

@@ -109,6 +109,40 @@ node scripts/backup.mjs --out /mnt/bak  # 输出到备份盘
 两者刻意分开：用「查库」当存活探针时，数据库短暂不可用会被误判成进程死了，导致容器反复重启、放大故障。
 `/readyz` **不主动连 LDAP** —— 目录暂时不可达时平台本身仍可用，不该把整个实例判为未就绪。
 
+## 启动前自检与应急恢复
+
+平台启动时会先跑一次自检，把「配置错误」提前暴露出来，而不是等到使用者登录失败才发现：
+
+```bash
+npm run preflight     # 检查密钥是否缺失/仍是占位符、数据目录是否可写、
+                      # 以及「配了管理员名单却没有认证源」这种会导致完全无法登录的死局
+```
+
+容器里由 `docker/entrypoint-platform.sh` 自动调用 —— 自检不通过会**阻止启动**并打印原因与改法
+（紧急情况可用 `SKIP_PREFLIGHT=1` 绕过）。这样问题的表现形式是「容器起不来 + 明确原因」，
+而不是「登录莫名其妙失败」。
+
+万一真的把自己锁在门外（换过密钥导致口令解不开、LDAP 不可达、角色丢了），用下面这个工具诊断和恢复。
+它直接读写数据目录里的 SQLite，**不依赖服务进程**，平台起不来时照样能用：
+
+```bash
+npm run admin:inspect                              # 诊断：当前到底有哪几条登录路径
+node scripts/reset-admin.mjs --clear-ldap --yes    # 清空坏掉的认证源配置
+node scripts/reset-admin.mjs --grant you@corp.local
+```
+
+完整恢复流程（含顺序陷阱）见 `DOCKER-DEPLOYMENT.md` §9.5「锁死后如何恢复」。
+
+## 代码检查
+
+```bash
+npm run verify    # lint + typecheck + PowerShell 编码约定
+```
+
+`.ps1` 脚本必须保持 **UTF-8 BOM + CRLF** —— Windows PowerShell 5.1 在没有 BOM 时会按系统 ANSI
+代码页解读，中文字符串会乱码，甚至让 Parser 直接报语法错（历史上真的这么废掉过一个脚本）。
+这条约定由 `npm run check:encoding` 强制，CI 同样会跑。
+
 ## 回归测试
 
 平台需已启动（脚本会真实写数据，**只能打开发/验收环境**）：

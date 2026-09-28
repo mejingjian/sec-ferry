@@ -16,5 +16,11 @@ mkdir -p "$DATA_DIR/db" "$DATA_DIR/files" "$DATA_DIR/backups"
 echo "[entrypoint] 迁移数据库（幂等，已应用的会跳过）…"
 node scripts/migrate.mjs
 
+# 启动前自检：把「配置错误」提前到启动这一刻，让它表现为「容器起不来」这个显眼信号，
+# 而不是埋到运行期、变成使用者口中的「登录莫名其妙失败」。
+# 自检不通过会以非 0 退出（set -e 生效），紧急情况下可用 SKIP_PREFLIGHT=1 绕过。
+echo "[entrypoint] 启动前自检…"
+node scripts/preflight.mjs
+
 echo "[entrypoint] 启动平台：端口 ${PORT}，数据目录 ${DATA_DIR}"
 exec node server.js

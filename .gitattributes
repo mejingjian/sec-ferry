@@ -15,6 +15,10 @@
 *.ps1  text eol=crlf
 *.psm1 text eol=crlf
 
+# Dockerfile：LF —— CRLF 会影响指令与反斜杠续行的解析
+Dockerfile*  text eol=lf
+*.dockerfile text eol=lf
+
 # 其余脚本与源码：LF
 *.sh   text eol=lf
 *.mjs  text eol=lf
