@@ -90,3 +90,6 @@ next-env.d.ts
 
 # 开源筹备期的内部清单，不随仓库公开
 /OPEN-SOURCE-READINESS.md
+
+# 内部需求评估留档（内部决策密度高、对外价值低），保留在本地不入库
+/UNIFIED-TRANSFER-EVAL.md
