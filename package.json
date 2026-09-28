@@ -1,8 +1,18 @@
 {
   "name": "transfer-approval-platform",
   "version": "1.0.0",
-  "private": true,
   "description": "内网文件安全收发审批平台（Next.js standalone + SQLite + LDAP 直连，局域网自托管）",
+  "license": "MIT",
+  "keywords": [
+    "file-transfer",
+    "approval-workflow",
+    "audit-log",
+    "ldap",
+    "self-hosted",
+    "intranet",
+    "nextjs",
+    "sqlite"
+  ],
   "engines": {
     "node": ">=22.13.0"
   },

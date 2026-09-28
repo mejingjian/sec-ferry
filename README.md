@@ -190,3 +190,10 @@ docker/                Dockerfile.platform / entrypoint / 测试用 LDAP 镜像
 - `LOCAL-DEPLOYMENT.md` —— 本地开发与生产形态本地运行
 - `PROD-DEPLOYMENT.md` —— 生产部署与运维
 - `CONTENT-TYPE-GUARD.md` —— 内容防伪装策略与验收用例
+
+## 许可证
+
+本项目采用 [MIT 许可证](LICENSE) —— 可自由使用、修改、分发，包括商业用途，只需保留版权声明。
+
+第三方资源：`vendor/` 下的样式文件来自 shadcn/tailwind 生态，其许可条款见
+`vendor/shadcn-tailwind-4.13.0.LICENSE.md`。

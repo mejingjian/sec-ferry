@@ -45,3 +45,8 @@ Dockerfile*  text eol=lf
 *.woff2 binary
 *.db    binary
 *.sqlite binary
+
+# 本文件与忽略文件自身也保持 LF —— .gitattributes 若被转成 CRLF，
+# 末尾那条规则带 \r 会匹配不上（模式是不含行尾的）。
+.gitattributes text eol=lf
+.gitignore     text eol=lf
