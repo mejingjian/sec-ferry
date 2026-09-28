@@ -105,8 +105,22 @@ services:
         set -eu
         interval="$${BACKUP_INTERVAL_SECONDS:-86400}"
         echo "[backup] 启动：每 $${interval}s 备份一次，数据库保留 $${BACKUP_KEEP:-14} 份"
+        # 失败短间隔重试：平台容器刚重建时 -shm 可能尚未就绪，只读打开 WAL 库会瞬态失败，
+        # 不能因此等满一个完整周期（24h）都没有备份。
+        max_attempts=5
         while true; do
-          node scripts/backup.mjs --keep "$${BACKUP_KEEP:-14}" || echo "[backup] 本次备份失败，等待下一轮"
+          ok=0
+          attempt=0
+          while [ "$${attempt}" -lt "$${max_attempts}" ]; do
+            attempt=$$((attempt + 1))
+            if node scripts/backup.mjs --keep "$${BACKUP_KEEP:-14}"; then
+              ok=1
+              break
+            fi
+            echo "[backup] 第 $${attempt}/$${max_attempts} 次备份失败，60s 后重试"
+            sleep 60
+          done
+          [ "$${ok}" -eq 1 ] || echo "[backup] 连续 $${max_attempts} 次备份失败，等待下一轮"
           sleep "$${interval}"
         done
     # 该容器不提供 HTTP 服务，禁用镜像里继承的 /healthz 探针
