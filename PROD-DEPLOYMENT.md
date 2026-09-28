@@ -37,6 +37,8 @@
 - [ ] 已生成 `CONFIG_ENCRYPTION_KEY`（`openssl rand -hex 32`）并**离线备份**（它不在任何卷里）。丢失只能清空认证源重配
 - [ ] 已确认密钥轮换路径可用：`npm run test:rekey` 通过（上线后如需轮换，见 `DOCKER-DEPLOYMENT.md` §9.6）
 - [ ] 已确定管理员域名名单（`PLATFORM_ADMIN_EMAILS`）—— 生产必配，否则等于人人可自声明登录
+- [ ] 首次初始化方式已定：手工点页面，或用 `scripts/bootstrap.mjs` 无人值守写入（见 `DOCKER-DEPLOYMENT.md` §3.1；
+      注意顺序 —— 先写认证源，再配 `PLATFORM_ADMIN_EMAILS`，反了会被 preflight 拦下）
 - [ ] 已确认 `QUARANTINE_RETENTION_DAYS` 与本单位合规要求一致
 - [ ] 若 LDAPS 用自签名证书，确认 `LDAP_TLS_REJECT_UNAUTHORIZED=false`（或换成受信证书后设 true）
 

@@ -88,6 +88,37 @@ docker compose --env-file .env.docker --profile dev up -d    # 再带一个测�
 > `scripts/open-lan-access.ps1`（放行 8787 并停用那两条 Block，`-Revert` 可完整回滚）。
 > 本机实测：域认证网络下不加这条规则，其它机器是连不上的。
 
+### 3.1 首次初始化：bootstrap（可脚本化，替代手工点页面）
+
+新部署原本必须「起容器 → 兜底登录 → 页面配 LDAP → 点同步 → 配角色」。
+`scripts/bootstrap.mjs` 把这几步收成一条命令（值全部走环境变量，敏感信息不进命令行）：
+
+```bash
+# ① 先 dry-run 看计划（不写库）：
+docker compose --env-file .env.docker exec platform \
+  env BOOTSTRAP_LDAP_HOST=ldap.corp.local \
+      BOOTSTRAP_LDAP_BASE_DN="dc=corp,dc=local" \
+      BOOTSTRAP_LDAP_BIND_DN="cn=readonly,dc=corp,dc=local" \
+      BOOTSTRAP_LDAP_BIND_PASSWORD='<服务账号口令>' \
+      BOOTSTRAP_ROLES="zhangsan@corp.local:管理员,wangwu@corp.local:审批人" \
+    node scripts/bootstrap.mjs
+
+# ② 确认无误后追加 --yes：会先用给定凭据真实 bind 一次（失败不写库），再单事务写入
+#    认证源 + 角色，并与审计记录（操作者「运维 CLI（部署引导）」）同事务提交。
+#    本地开发直接 npm run bootstrap / npm run bootstrap -- --yes（自动加载 .env）。
+```
+
+要点：
+
+- **bind 验证前置**：写进去却连不上的配置比写不进去更难排查；验证失败（含凭据错误、网络不可达）
+  一律不落库。确有需要可 `--skip-verify`（仅限「网络暂时不可达但配置本身可信」的场景）。
+- **锁死顺序陷阱**（§9.5 同源）：若 `PLATFORM_ADMIN_EMAILS` 已配置而库里**尚无**可用认证源，
+  本脚本会拒绝执行并解释原因 —— 正确顺序是先写认证源、后收紧管理员名单。
+- 口令可用 `BOOTSTRAP_LDAP_BIND_PASSWORD_FILE=/run/secrets/xxx` 从文件读（取首个非空行），
+  配合 docker secrets / systemd credentials 实现零明文进环境。
+- 覆盖语义：认证源行整体 upsert（现有配置会被覆盖），角色按邮箱 upsert。
+- 执行后到「LDAP 与权限」页点一次「同步用户」（或等自动同步周期），用户数据即进入平台。
+
 ## 4. 持久卷与数据
 
 `/data` 被拆成**三个按用途划分的卷**，备份边界因此是明确的：
