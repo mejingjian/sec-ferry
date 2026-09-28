@@ -16,7 +16,10 @@
 //                                                   # 双向：库里密文是 a 加密的，要变成 b
 //                                                   # （「已经轮换过但环境变量没改」的救援场景）
 //
+//   npm run rekey -- --fingerprint                  # 只读：打印当前密钥的指纹（比对离线备份用）
+//
 // 选项：
+//   --fingerprint          只打印当前密钥的 SHA-256 指纹后退出（校对两份离线备份是否一致，不显示密钥本身）
 //   --old-key <hex>        旧密钥（默认取环境变量 CONFIG_ENCRYPTION_KEY）
 //   --old-key-file <path>  从文件读旧密钥（取首个非空行；避免密钥进入 shell 历史）
 //   --new-key <hex>        新密钥
@@ -31,7 +34,7 @@
 // 注意：本脚本不会自动读取 .env；需要时显式传入 --env-file-if-exists 或用 npm 脚本。
 
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { openSqlite } from "../db/sqlite-client.mjs";
@@ -108,6 +111,25 @@ if (generated) newKey = randomBytes(32).toString("hex");
 
 const envFile = argValue("env-file");
 const writeMode = Boolean(newKey);
+
+// ---------- 指纹模式 ----------
+// 用途：离线备份的密钥是否和线上仍在用的那把一致 —— 直接比对密钥本身有复制错位的风险，
+// 指纹（SHA-256 前 16 位）足以判定「是不是同一把」，又不会把密钥显示在屏幕上。
+if (hasFlag("--fingerprint")) {
+  if (!oldKey) {
+    console.log("[x] 未提供密钥。用环境变量 CONFIG_ENCRYPTION_KEY 或 --old-key / --old-key-file 指定。");
+    process.exit(1);
+  }
+  const keyError = validateKey(oldKey, "当前密钥");
+  if (keyError) {
+    console.log(`[x] ${keyError}`);
+    process.exit(1);
+  }
+  const fingerprint = createHash("sha256").update(oldKey, "utf8").digest("hex").slice(0, 16).toUpperCase();
+  console.log("密钥指纹（SHA-256 前 16 位，与离线备份上的记录比对即可确认是否同一把密钥）：");
+  console.log(`  ${fingerprint.match(/.{4}/g).join("-")}`);
+  process.exit(0);
+}
 
 console.log("密钥轮换（rekey）");
 console.log(`  数据目录            = ${dataDir}`);
