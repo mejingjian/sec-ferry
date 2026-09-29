@@ -64,6 +64,9 @@ next-env.d.ts
 # 本地数据目录（SQLite + 隔离区文件 + 备份），可整体搬迁/备份
 /.local-data/
 
+# CI 端到端回归用的临时数据目录（本地照 CI 步骤预演时产生）
+/.ci-data/
+
 # ⚠️ 以下目录是构建必需源码，切勿加入忽略：
 #   /vendor/ —— app/globals.css @import ../vendor/shadcn-tailwind-*.css
 # 注：/build/、/.openai/、vite.config.ts 已于 2026-09-24 随「去 Workers 化」重构移除

@@ -7,8 +7,7 @@
 > `CONTENT-TYPE-GUARD.md`（内容防护专项）。
 >
 > **2026-09-24 重大变更**：运行时已从 Cloudflare Workers（vinext + wrangler/workerd + D1/R2 绑定）
-> 整体迁移到标准 Node 自托管。旧运行时相关文件已移入隔离区
-> `D:\AI\workBuddy\_cleanup-quarantine\transfer-platform-refactor-20260924\removed-vinext\`（未删除，可回滚），
+> 整体迁移到标准 Node 自托管。旧运行时相关文件已移出仓库到本地归档目录（未删除，可回滚），
 > 重构前的安全快照是 git commit `026258f`。
 
 ---
@@ -378,8 +377,7 @@ npm run docker:smoke
 | 根目录垃圾 | 移入隔离区 | `.tmp-dev.log`、`tsconfig.tsbuildinfo`、`.next/`、`examples/`（模板残留）、`.backup/`（旧库备份） |
 | `.gitignore` | 补条目并加警告注释 | **`/vendor/` 是构建必需源码（`app/globals.css` @import），切勿加入忽略** |
 
-隔离区（**未删除，可回滚**）：`D:\AI\workBuddy\_cleanup-quarantine\transfer-platform-20260924\`，
-内含 `RESTORE.md` 恢复说明。
+隔离区（**未删除，可回滚**）：本次重构中被替换掉的文件已移出仓库到本地归档目录，内含 `RESTORE.md` 恢复说明。
 
 **清理后新增组件的正确姿势**：不要手动从隔离区拷回，用 `npx shadcn@latest add <component>`。
 

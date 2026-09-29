@@ -29,5 +29,3 @@
 ### 文档
 
 - `README` / `DOCKER-DEPLOYMENT` / `PROD-DEPLOYMENT` / `DEVELOPMENT` / `LOCAL-DEPLOYMENT`：覆盖部署、加固、排障、密钥轮换与离线备份、锁死恢复（break-glass）
-
-[1.0.0]: https://example.com/releases/tag/v1.0.0
