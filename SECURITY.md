@@ -16,7 +16,7 @@
 
 1. 通过 GitHub 的「**Report a vulnerability**」（Security 标签页 → Private vulnerability reporting）
    私密报告；
-2. 或发送邮件到维护者邮箱（见仓库主页 README 顶部的联系方式）。
+2. 或发送邮件到维护者邮箱 **mejingjian@outlook.com**。
 
 请在报告中包含：影响范围（哪个端点/流程）、复现步骤或 PoC、你的评估（严重程度）。
 若涉及内网部署环境的信息请一并脱敏。

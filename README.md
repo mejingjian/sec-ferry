@@ -1,5 +1,9 @@
 # 文件安全收发平台
 
+[![CI](https://github.com/mejingjian/sec-ferry/actions/workflows/ci.yml/badge.svg)](https://github.com/mejingjian/sec-ferry/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D22.13-339933?logo=node.js&logoColor=white)](package.json)
+
 内网（可离线）文件安全收发审批平台：**提交文件 → 规则判定 → 审批 → 站内送达 → 收件人下载留痕**，
 全链路可审计。设计目标是「一台机器、一个进程、一个数据目录就能跑起来」，不依赖任何云服务。
 
@@ -199,6 +203,12 @@ docker/                Dockerfile.platform / entrypoint / 测试用 LDAP 镜像
 - `LOCAL-DEPLOYMENT.md` —— 本地开发与生产形态本地运行
 - `PROD-DEPLOYMENT.md` —— 生产部署与运维
 - `CONTENT-TYPE-GUARD.md` —— 内容防伪装策略与验收用例
+
+## 联系方式
+
+- 缺陷、建议、功能请求：[GitHub Issues](https://github.com/mejingjian/sec-ferry/issues)
+- 安全漏洞：**请勿公开提交**，按 `SECURITY.md` 的私密报告流程（GitHub 私密漏洞报告，或邮件 mejingjian@outlook.com）
+- 维护者：mejingjian
 
 ## 许可证
 

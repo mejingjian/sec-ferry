@@ -3,6 +3,15 @@
   "version": "1.0.0",
   "description": "内网文件安全收发审批平台（Next.js standalone + SQLite + LDAP 直连，局域网自托管）",
   "license": "MIT",
+  "author": "mejingjian <mejingjian@outlook.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mejingjian/sec-ferry.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mejingjian/sec-ferry/issues"
+  },
+  "homepage": "https://github.com/mejingjian/sec-ferry#readme",
   "keywords": [
     "file-transfer",
     "approval-workflow",

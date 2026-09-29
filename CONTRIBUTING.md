@@ -58,3 +58,10 @@ CI 会跑同一套检查，PR 不绿不合并。
 ## 行为准则
 
 参与本项目即表示同意 `CODE_OF_CONDUCT.md`。安全问题请走 `SECURITY.md` 的披露流程，**不要**开公开 issue。
+
+## 联系方式
+
+- 仓库：<https://github.com/mejingjian/sec-ferry>
+- 缺陷与建议：[GitHub Issues](https://github.com/mejingjian/sec-ferry/issues)
+- 安全漏洞：见 `SECURITY.md`（GitHub 私密漏洞报告，或邮件 mejingjian@outlook.com）
+- 维护者：mejingjian

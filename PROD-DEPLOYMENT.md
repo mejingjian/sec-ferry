@@ -45,7 +45,7 @@
 ## 3. 首次上线
 
 ```bash
-git clone <repo> && cd transfer-approval-platform
+git clone https://github.com/mejingjian/sec-ferry.git && cd sec-ferry
 cp .env.docker.example .env.docker       # ⚠️ 是 .env.docker；根目录 .env 是本地开发用的，别覆盖
 vi .env.docker                           # 至少填 CONFIG_ENCRYPTION_KEY 与 PLATFORM_ADMIN_EMAILS
 docker compose --env-file .env.docker up -d --build   # 平台 + 备份 sidecar
