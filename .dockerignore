@@ -27,6 +27,7 @@ _*.mjs
 .env.*
 local.config.json
 
-# 文档不进镜像
+# 文档不进镜像（截图等文档资产只服务 README，没必要进构建上下文）
 *.md
+docs
 docker-compose.yml
