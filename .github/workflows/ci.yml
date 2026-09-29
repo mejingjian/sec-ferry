@@ -105,7 +105,10 @@ jobs:
           node scripts/e2e-internal-transfer.mjs --base http://127.0.0.1:8787 --mock-ldap > /tmp/e2e.log 2>&1 && e2e_status=0 || e2e_status=$?
           tail -40 /tmp/e2e.log
 
-          # 步骤日志需要登录才能看，Job Summary 不用 —— 把结论写进摘要，任何人都能核对
+          # 步骤日志与 Job Summary 都需要登录才能看，**注解（annotation）不用** ——
+          # 两条都发：注解给外面的人核对，「摘要」给登录后的 reviewer 看细节。
+          e2e_line="$(grep -E '通过 [0-9]+ 项' /tmp/e2e.log | tail -1 || true)"
+          echo "::notice title=端到端回归结果::${e2e_line:-未取到汇总行，请看 job 日志}"
           {
             echo "### 端到端回归"
             echo ""
