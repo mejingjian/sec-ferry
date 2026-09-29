@@ -101,8 +101,6 @@ async function submit(cookie, fileName, bytes) {
   return { status: response.status, json };
 }
 
-const GUARDS = ["normal", "strict", "off"];
-
 async function main() {
   const health = await request("/api/auth/me");
   if (health.status === 0 || (health.status >= 500 && !health.json)) {

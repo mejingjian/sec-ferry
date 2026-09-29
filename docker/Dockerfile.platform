@@ -41,10 +41,17 @@ ENV NODE_ENV=production \
 # standalone 产物已包含最小 node_modules、server.js、.next/static、public 与 drizzle
 COPY --from=builder /app/.next/standalone ./
 # 迁移 CLI：让「启动前迁移」能 fail-fast（应用内也会惰性迁移，两者共用 db/*.mjs 同一份逻辑）
-COPY --from=builder /app/db/migrations.mjs /app/db/sqlite-client.mjs /app/db/crypto.mjs /app/db/audit-chain.mjs ./db/
+# ⚠️ 这里是**逐文件白名单**：db/ 下新增被 CLI 或 sqlite-client 依赖的模块，必须同步加进来，
+#    否则镜像能构建成功、却在 entrypoint 第一步（migrate）抛 ERR_MODULE_NOT_FOUND。
+#    （教训：runtime.mjs 漏掉过一次 —— standalone 产物只含被应用打包进去的代码，
+#      不会自动带上 CLI 需要的同目录模块。）
+COPY --from=builder /app/db/migrations.mjs /app/db/sqlite-client.mjs /app/db/crypto.mjs /app/db/audit-chain.mjs /app/db/runtime.mjs ./db/
 # preflight.mjs  —— 启动前自检（配置错误在启动那一刻就暴露）
 # reset-admin.mjs—— 应急诊断 / 恢复（不依赖服务进程，平台起不来时也能用）
-COPY --from=builder /app/scripts/migrate.mjs /app/scripts/backup.mjs /app/scripts/preflight.mjs /app/scripts/reset-admin.mjs /app/scripts/rekey.mjs ./scripts/
+# bootstrap.mjs  —— 首次初始化引导，文档给的是 `docker compose exec platform node scripts/bootstrap.mjs`，
+#                   所以它必须进镜像，否则那条命令会找不到文件
+# 同上：新增 CLI 脚本时记得加进这条白名单
+COPY --from=builder /app/scripts/migrate.mjs /app/scripts/backup.mjs /app/scripts/preflight.mjs /app/scripts/reset-admin.mjs /app/scripts/rekey.mjs /app/scripts/bootstrap.mjs ./scripts/
 # 备份脚本要能在容器里独立执行（backup sidecar 复用同一镜像）
 COPY --from=builder /app/package.json ./package.json
 

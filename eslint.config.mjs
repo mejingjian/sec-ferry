@@ -14,6 +14,16 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
   ]),
   {
+    // `_` 前缀 = 「为签名/接口对齐而保留、有意不用」（例如 better-sqlite3 同构层忽略第二个参数）。
+    // 这是普遍约定，不该在每次 PR 里以警告形式出现。
+    rules: {
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_", caughtErrorsIgnorePattern: "^_" },
+      ],
+    },
+  },
+  {
     files: ["components/ui/**/*.{ts,tsx}", "hooks/use-mobile.ts"],
     rules: {
       // These files are vendored verbatim from shadcn@4.17.0. Keep the

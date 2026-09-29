@@ -344,17 +344,26 @@ npm run docker:smoke
    下限的单一真相是 `db/runtime.mjs`（另见 `scripts/preflight.mjs` 第 1 项与 `.npmrc` 的 engine-strict），
    调整它之前先想清楚。
 
+7. **运行期镜像是「逐文件白名单」拷贝，加文件时极容易漏**：`docker/Dockerfile.platform` 的运行阶段
+   只 COPY 少数 `db/*.mjs` 与 `scripts/*.mjs`（`.next/standalone` 只含被应用打包进去的代码，
+   **不会**带上 CLI 需要的同目录模块）。漏掉一个的后果特别隐蔽：**镜像构建成功、容器也能起来，
+   却在 entrypoint 第一步 `migrate` 就抛 `ERR_MODULE_NOT_FOUND`**。
+   2026-09-29 引入 `db/runtime.mjs`（版本闸门）时漏过一次，靠人工比对才发现。
+   现在有守卫：`npm run check:image`（已并入 `verify`，CI 也跑）—— 解析 Dockerfile 的 COPY 白名单，
+   校验白名单内文件的**相对导入闭包**是否闭合，并用「故意删掉 runtime.mjs」做自测。
+   新增 CLI 脚本（如 `bootstrap.mjs`）时，除了加白名单，记得它要能被容器内 `ldapts` 等依赖解析到。
+
 **通用**：
 
-7. **Edit 工具偶发"假成功"**：报成功未落盘。关键编辑后必须 grep 复核；批量修改用 node/Python 脚本精确替换。
-8. **沙箱 bash 的 PATH 常不全**（`ls: command not found`）：命令前加
+8. **Edit 工具偶发"假成功"**：报成功未落盘。关键编辑后必须 grep 复核；批量修改用 node/Python 脚本精确替换。
+9. **沙箱 bash 的 PATH 常不全**（`ls: command not found`）：命令前加
    `export PATH="/usr/bin:/bin:/c/Windows/System32:$PATH"`。**PowerShell 工具的 stdout 本会话不回流**，
    需要落盘再读。
-9. **后台进程**：用工具自带的后台机制；`nohup … &` 在本 shim 下会被回收（日志为空、进程不存在）。
-10. **新增/改写 `.ps1` 必须 UTF-8 BOM + CRLF**，否则中文与换行损坏。
-11. **可见性判定只用 `lib/visibility.ts`**；**哈希只用 `lib/sha256.ts` 流式**；
+10. **后台进程**：用工具自带的后台机制；`nohup … &` 在本 shim 下会被回收（日志为空、进程不存在）。
+11. **新增/改写 `.ps1` 必须 UTF-8 BOM + CRLF**，否则中文与换行损坏。
+12. **可见性判定只用 `lib/visibility.ts`**；**哈希只用 `lib/sha256.ts` 流式**；
     **LDAP 搜索 `returnAttributeValues` 必须为 true**。
-12. 已移除功能勿复活：历史外发、`verify-archive.mjs`、交付网关（2026-09-22 用户决定整体移除）。
+13. 已移除功能勿复活：历史外发、`verify-archive.mjs`、交付网关（2026-09-22 用户决定整体移除）。
 
 ---
 

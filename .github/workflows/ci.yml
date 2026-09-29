@@ -40,6 +40,10 @@ jobs:
       - name: PowerShell 编码约定
         run: npm run check:encoding
 
+      # 运行期镜像是逐文件白名单拷贝，漏一个模块的后果是「构建成功但容器起不来」
+      - name: 运行期镜像白名单
+        run: npm run check:image
+
       # 密钥轮换是不可逆操作（原地覆盖密文），必须自动把关。
       # 它自带临时空库、不碰任何真实数据、也不需要平台在跑。
       - name: 密钥轮换回归
@@ -98,7 +102,19 @@ jobs:
             exit 1
           fi
 
-          node scripts/e2e-internal-transfer.mjs --base http://127.0.0.1:8787 --mock-ldap
+          node scripts/e2e-internal-transfer.mjs --base http://127.0.0.1:8787 --mock-ldap > /tmp/e2e.log 2>&1 && e2e_status=0 || e2e_status=$?
+          tail -40 /tmp/e2e.log
+
+          # 步骤日志需要登录才能看，Job Summary 不用 —— 把结论写进摘要，任何人都能核对
+          {
+            echo "### 端到端回归"
+            echo ""
+            echo '```'
+            grep -E '^(通过|失败)|通过 [0-9]+ 项|失败 [0-9]+ 项|\[FAIL\]' /tmp/e2e.log | tail -20 || true
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+
+          exit "$e2e_status"
 
       - name: 失败时输出服务日志
         if: failure()
