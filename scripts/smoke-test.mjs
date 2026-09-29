@@ -4,6 +4,8 @@
 //   node scripts/smoke-test.mjs --base http://127.0.0.1:8787 --admin a@x.com --approver b@x.com --requester c@x.com
 // 域账号登录（LDAP bind）环境下需带密码，可用通用 --password，或按角色分别指定：
 //   node scripts/smoke-test.mjs --admin zhangsan@example.local --admin-password 域密码 ...
+// 打 mock 目录实例（口令 = 账号名）时用 --mock-ldap，不必逐个角色传口令：
+//   node scripts/smoke-test.mjs --mock-ldap --admin zhangsan@example.local --approver wangwu@example.local --requester lisi@example.local
 // 可选写入用例（会真实提交一笔申请）：
 //   node scripts/smoke-test.mjs --write
 //
@@ -24,9 +26,13 @@ const REQUESTER_EMAIL = argValue("requester", process.env.SMOKE_REQUESTER_EMAIL 
 // --admin-password / --approver-password / --requester-password。
 // 不传密码时按"联调态自声明登录"走（仅当平台未配置 LDAP 认证源时才可能成功）。
 const COMMON_PASSWORD = argValue("password", process.env.SMOKE_PASSWORD || "");
-const ADMIN_PASSWORD = argValue("admin-password", process.env.SMOKE_ADMIN_PASSWORD || COMMON_PASSWORD);
-const APPROVER_PASSWORD = argValue("approver-password", process.env.SMOKE_APPROVER_PASSWORD || COMMON_PASSWORD);
-const REQUESTER_PASSWORD = argValue("requester-password", process.env.SMOKE_REQUESTER_PASSWORD || COMMON_PASSWORD);
+// --mock-ldap：mock 目录的约定是「口令 = 账号名」，与 e2e / verify-content-type 同一口径，
+// 省去逐个角色传口令。显式传入的 --*-password / --password 仍然优先。
+const MOCK_LDAP = args.includes("--mock-ldap");
+const mockPassword = (account) => (MOCK_LDAP && account ? account.split("@")[0] : "");
+const ADMIN_PASSWORD = argValue("admin-password", process.env.SMOKE_ADMIN_PASSWORD || COMMON_PASSWORD || mockPassword(ADMIN_EMAIL));
+const APPROVER_PASSWORD = argValue("approver-password", process.env.SMOKE_APPROVER_PASSWORD || COMMON_PASSWORD || mockPassword(APPROVER_EMAIL));
+const REQUESTER_PASSWORD = argValue("requester-password", process.env.SMOKE_REQUESTER_PASSWORD || COMMON_PASSWORD || mockPassword(REQUESTER_EMAIL));
 const WRITE = args.includes("--write");
 
 let passed = 0;

@@ -6,9 +6,11 @@
 //   ④ 审批通过 → 收件通知发到收件人邮箱（送达通知挂接生效）
 //
 // 运行（平台需已启动；本脚本会真实写入发送单/角色/邮件配置，只能打开发/验收环境）：
-//   node scripts/test-mail-notify.mjs --mock-ldap          # 容器栈（openldap 389，口令 Passw0rd!<账号>）
+//   node scripts/test-mail-notify.mjs --mock-ldap          # mock 目录实例（本地 / CI）：口令 = 账号名
+//   node scripts/test-mail-notify.mjs                      # 容器栈 openldap 389：口令 Passw0rd!<账号>
 //   node scripts/test-mail-notify.mjs --base http://127.0.0.1:8787 --smtp-host 127.0.0.1
 //
+// --mock-ldap 表示打的是「mock 目录」实例：口令取账号名，mock SMTP 默认按本机直连（127.0.0.1）。
 // --smtp-host 是「平台应用侧」看到的 mock SMTP 地址：打容器实例时用默认 host.docker.internal，
 // 打本地（local:start）实例时传 127.0.0.1。mock SMTP 始终监听在本机 127.0.0.1:2525。
 // 结束时自动把邮件配置恢复为运行前状态（密码不覆盖原值）。
@@ -25,16 +27,19 @@ function argValue(name, fallback = undefined) {
 }
 
 const BASE = argValue("base", "http://127.0.0.1:8787").replace(/\/$/, "");
+// 打的是「mock 目录」实例（本地联调 / CI）：口令取账号名，mock SMTP 默认本机直连
+const MOCK_LDAP = args.includes("--mock-ldap");
 const REQUESTER = argValue("requester", "lisi");
 const APPROVER = argValue("approver", "wangwu");
 const RECIPIENT = argValue("recipient", "zhaoliu");
 const MAIL_DOMAIN = argValue("mail-domain", "example.local");
 const SMTP_PORT = Number(argValue("smtp-port", "2525"));
 // 应用侧访问 mock SMTP 的主机名：容器实例 → host.docker.internal；本地实例 → 127.0.0.1
-const SMTP_HOST_FOR_APP = argValue("smtp-host", "host.docker.internal");
+const SMTP_HOST_FOR_APP = argValue("smtp-host", MOCK_LDAP ? "127.0.0.1" : "host.docker.internal");
 const SMTP_FROM = argValue("smtp-from", "transfer-platform@test.local");
-// 容器栈 openldap 口令约定：Passw0rd!<账号名>；--password 可整体覆盖
-const password = (account) => argValue("password") || `Passw0rd!${account}`;
+// 口令口径：容器栈 openldap 为 Passw0rd!<账号名>；mock 目录（--mock-ldap）口令 = 账号名。
+// --password 可整体覆盖（两侧口令约定一致时使用）。
+const password = (account) => argValue("password") || (MOCK_LDAP ? account : `Passw0rd!${account}`);
 const DEAD_PORT = Number(argValue("dead-port", "2599"));
 const SIZE = 300 * 1024;
 

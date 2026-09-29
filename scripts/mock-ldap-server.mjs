@@ -22,7 +22,8 @@ function argValue(name, fallback) {
   const index = args.indexOf(`--${name}`);
   return index >= 0 && args[index + 1] ? args[index + 1] : fallback;
 }
-const PORT = Number(argValue("port", "3890"));
+// 端口可用 --port 指定，也可用 MOCK_LDAP_PORT 环境变量（供测试脚本 import 时指定，见文件尾导出）
+const PORT = Number(argValue("port", process.env.MOCK_LDAP_PORT || "3890"));
 const BASE_DN = argValue("base-dn", "dc=example,dc=local");
 const SERVICE_DN = `cn=admin,${BASE_DN}`;
 
@@ -251,7 +252,9 @@ function handleConnection(socket) {
   });
 }
 
-const server = net.createServer(handleConnection);
+// 导出 server：供测试脚本在同一进程内起一个 mock 目录（配合 MOCK_LDAP_PORT），
+// 从而不必派生 node 子进程 —— 受宿主安全策略限制的环境里也能跑。
+export const server = net.createServer(handleConnection);
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`[mock-ldap] 监听 ldap://127.0.0.1:${PORT}  baseDn=${BASE_DN}`);
   console.log(`[mock-ldap] 服务帐号：${SERVICE_DN}（任意非空密码）；用户：${ENTRIES.map((entry) => `${entry.uid}/${entry.password}`).join("、")}`);

@@ -157,19 +157,35 @@ npm run verify    # lint + typecheck + PowerShell 编码约定
 
 ## 回归测试
 
-平台需已启动（脚本会真实写数据，**只能打开发/验收环境**）：
+**不需要平台**（自带临时空库/临时目录，可以随时跑）：
 
 | 命令 | 覆盖 | 用例数 |
 | --- | --- | --- |
-| `node scripts/check-sha256.mjs` | 增量 SHA-256 与 Node crypto 一致 | 11 |
+| `npm run check:sha256` | 增量 SHA-256 与 Node crypto 一致 | 11 |
+| `npm run test:bootstrap` | 首次部署引导：参数校验 / bind 验证 / 同事务写入 / 审计链 | 57 |
+| `npm run test:rekey` | 密钥轮换（只读审计/轮换/往返/审计链） | 40 |
+
+**需要平台已启动**（脚本会真实写数据，**只能打开发/验收环境**）：
+
+| 命令 | 覆盖 | 用例数 |
+| --- | --- | --- |
 | `node scripts/e2e-internal-transfer.mjs --mock-ldap` | 提交 → 审批 → 送达 → 下载 → 撤回 全闭环 | 29 |
 | `node scripts/verify-content-type.mjs --mock-ldap` | 内容防伪装（TC-01~TC-12） | 26 |
-| `node scripts/smoke-test.mjs --write` | 接口契约 + 可见性口径 | 26 |
-| `node scripts/test-ldap-login.mjs` | 配认证源 → 同步 → 登录 → 锁定 | 18 |
-| `node scripts/test-rekey.mjs` | 密钥轮换（只读审计/轮换/往返/审计链），**不碰真实数据** | 40 |
+| `node scripts/smoke-test.mjs --mock-ldap --admin … --approver … --requester …` | 接口契约 + 可见性口径 | 26 |
+| `node scripts/test-mail-notify.mjs --mock-ldap` | 邮件通知闭环（内嵌 mock SMTP 2525） | 13 |
+| `node scripts/test-ldap-login.mjs` | 配认证源 → 同步 → 登录 → 锁定（**放最后跑**，会锁 zhaoliu 15 分钟） | 15~18 |
 
 `--mock-ldap` 会自动把认证源临时指向本地 mock LDAP（先起 `node scripts/mock-ldap-server.mjs --port 3890`），
 跑完**自动还原**原配置。mock 目录约定：**普通用户口令 = 账号名**。
+
+一次跑完整套（顺序已排好，也是 CI 用的那一套）：
+
+```bash
+node scripts/mock-ldap-server.mjs --port 3890 &     # 终端 A
+npm run start                                        # 终端 B
+npm run mock:prepare -- --sync                       # 认证源 + 三个角色 + 目录同步
+bash scripts/ci-regressions.sh                       # 依次跑上面五套并汇总（同 CI）
+```
 
 ## 目录结构
 

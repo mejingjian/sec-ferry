@@ -1,7 +1,13 @@
 name: CI
 
-# 开源后每个 PR 都要有自动把关 —— 回归脚本本身很齐备（6 个脚本、100+ 用例，
+# 开源后每个 PR 都要有自动把关 —— 回归脚本本身很齐备（10 个脚本、200+ 用例，
 # 且都支持 --base / --mock-ldap），接入成本很低，不做就太可惜了。
+#
+# 两个作业：
+#   verify  不依赖平台的静态检查与回归：编码约定 / 镜像白名单 / 密钥轮换 / 哈希自检 / 引导部署
+#   e2e     起 standalone + mock LDAP 后，由 scripts/ci-regressions.sh 一次跑完平台侧五套
+#           （收发闭环 / 内容防护 / 冒烟 / 邮件 / 域账号登录）
+# 结论尽量走 ::notice / ::error 注解 —— 步骤日志与 Job Summary 都需要登录才能看。
 
 on:
   push:
@@ -16,11 +22,13 @@ concurrency:
 jobs:
   verify:
     name: 静态检查与构建
-    runs-on: ubuntu-latest
+    # 钉版本而非 ubuntu-latest：latest 将于 2026-10-19 迁到 Ubuntu 26，
+    # 镜像换代（glibc/node 预装版本等）会让「昨天还绿」的构建突然变红。
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           # 锁定在**最低支持版本**上跑（见 db/runtime.mjs）：CI 的一个价值就是守住下限。
           # 别往下调 —— 代码用到 Node 22.16 才有的 sqlite.backup() / setReturnArrays()。
@@ -49,12 +57,22 @@ jobs:
       - name: 密钥轮换回归
         run: npm run test:rekey
 
+      - name: 哈希实现自检
+        run: npm run check:sha256
+
+      # bootstrap 是无人值守部署的唯一入口（容器首启 / IaC），写错的症状不是报错
+      # 而是「部署完了登录不了」。同样自带临时空库与同进程 mock LDAP，不需要平台。
+      - name: 引导部署回归
+        run: npm run test:bootstrap
+
       - name: 构建（含 standalone 组装）
         run: npm run build
 
   e2e:
     name: 端到端回归
-    runs-on: ubuntu-latest
+    # 钉版本而非 ubuntu-latest：latest 将于 2026-10-19 迁到 Ubuntu 26，
+    # 镜像换代（glibc/node 预装版本等）会让「昨天还绿」的构建突然变红。
+    runs-on: ubuntu-24.04
     needs: verify
     env:
       # 仅供 CI 使用的临时密钥（不承载任何真实数据，也不是秘密）
@@ -64,9 +82,9 @@ jobs:
       HOSTNAME: "127.0.0.1"
       # 注意：刻意不设 PLATFORM_ADMIN_EMAILS —— 回归脚本依赖「本地兜底管理员」来切换认证源
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           # 锁定在**最低支持版本**上跑（见 db/runtime.mjs）：CI 的一个价值就是守住下限。
           # 别往下调 —— 代码用到 Node 22.16 才有的 sqlite.backup() / setReturnArrays()。
@@ -82,7 +100,7 @@ jobs:
       - name: 启动前自检
         run: npm run preflight
 
-      - name: 起 mock LDAP 与平台，跑端到端回归
+      - name: 起 mock LDAP 与平台，跑回归套件
         run: |
           set -e
           node scripts/mock-ldap-server.mjs --port 3890 > /tmp/mock-ldap.log 2>&1 &
@@ -102,22 +120,14 @@ jobs:
             exit 1
           fi
 
-          node scripts/e2e-internal-transfer.mjs --base http://127.0.0.1:8787 --mock-ldap > /tmp/e2e.log 2>&1 && e2e_status=0 || e2e_status=$?
-          tail -40 /tmp/e2e.log
+          # 认证源与三个角色先备好：套件里的冒烟用例需要「管理员 / 审批人 / 发起人」齐备，
+          # 专项脚本各自只会补自己那一块，凑不齐（CI 里也没有人可以去页面上点）。
+          node scripts/seed-mock-env.mjs --base http://127.0.0.1:8787 --sync
 
+          # 五个专项一次跑完（收发闭环 / 内容防护 / 冒烟 / 邮件 / 域账号登录）。
           # 步骤日志与 Job Summary 都需要登录才能看，**注解（annotation）不用** ——
-          # 两条都发：注解给外面的人核对，「摘要」给登录后的 reviewer 看细节。
-          e2e_line="$(grep -E '通过 [0-9]+ 项' /tmp/e2e.log | tail -1 || true)"
-          echo "::notice title=端到端回归结果::${e2e_line:-未取到汇总行，请看 job 日志}"
-          {
-            echo "### 端到端回归"
-            echo ""
-            echo '```'
-            grep -E '^(通过|失败)|通过 [0-9]+ 项|失败 [0-9]+ 项|\[FAIL\]' /tmp/e2e.log | tail -20 || true
-            echo '```'
-          } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
-
-          exit "$e2e_status"
+          # 套件内部会用 ::notice / ::error 把结论发成注解。
+          bash scripts/ci-regressions.sh --base http://127.0.0.1:8787
 
       - name: 失败时输出服务日志
         if: failure()

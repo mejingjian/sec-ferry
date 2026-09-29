@@ -89,15 +89,29 @@ npm run local:start
 | 命令 | 覆盖 | 用例数 |
 |---|---|---|
 | `node scripts/check-sha256.mjs` | 流式哈希自检（不需要服务） | 11 |
+| `node scripts/test-bootstrap.mjs` | 首次部署引导（不需要服务；自带临时空库与 mock LDAP） | 57 |
+| `node scripts/test-rekey.mjs` | 密钥轮换全路径（**不写真实数据**，可随时跑） | 40 |
 | `node scripts/e2e-internal-transfer.mjs --mock-ldap` | 提交 → 审批 → 送达 → 下载 → 撤回 | 29 |
 | `node scripts/verify-content-type.mjs --mock-ldap` | 内容防伪装（TC-01~TC-12） | 26 |
-| `node scripts/smoke-test.mjs` + 三角色账号与口令 + `--write` | 接口契约 + 可见性 | 26 |
-| `node scripts/test-ldap-login.mjs` | 配认证源 → 同步 → 登录 → 锁定 | 18 |
-| `node scripts/test-rekey.mjs` | 密钥轮换全路径（**不写真实数据**，可随时跑） | 40 |
+| `node scripts/smoke-test.mjs --mock-ldap --write --admin … --approver … --requester …` | 接口契约 + 可见性 | 26 |
+| `node scripts/test-mail-notify.mjs --mock-ldap` | 邮件通知闭环（内嵌 mock SMTP） | 13 |
+| `node scripts/test-ldap-login.mjs` | 配认证源 → 同步 → 登录 → 锁定 | 15~18 |
 
-- 这些脚本会**真实写入**数据，只对本地/验收环境跑（`test-rekey.mjs` 例外，它自带临时空库）。
-- 口令默认取账号名（mock 约定），可用 `--requester-password` 等参数覆盖。
-- `test-ldap-login.mjs` 的失败锁定用例会把 `zhaoliu` 锁 15 分钟，**放最后跑**。
+**一条命令跑完平台侧五套**（顺序已排好，与 CI 完全一致）：
+
+```bash
+node scripts/mock-ldap-server.mjs --port 3890 &   # 终端 A：mock 目录
+npm run local:start                               # 终端 B：平台
+node scripts/seed-mock-env.mjs --sync             # 备好认证源 + 三个角色 + 通讯录
+bash scripts/ci-regressions.sh                    # 依次跑五套并汇总
+```
+
+- 这些脚本会**真实写入**数据，只对本地/验收环境跑（`test-rekey.mjs`、`test-bootstrap.mjs`
+  例外，它们自带临时库）；`check-sha256.mjs` 与两个 test-* 不需要服务。
+- 口令默认取账号名（mock 约定），可用 `--requester-password` 等参数覆盖；`--mock-ldap` 时不必逐个传。
+- `test-ldap-login.mjs` 的失败锁定用例会把 `zhaoliu` 锁 15 分钟，**放最后跑**
+  （`ci-regressions.sh` 已经这么排）；手动跑完再跑别的脚本前，先清
+  `DELETE FROM login_attempts WHERE identifier LIKE '%zhaoliu%'` 或等锁过期。
 - `--mock-ldap` 需要 mock LDAP 已在 3890 监听。
 
 ## 6. 常用维护命令

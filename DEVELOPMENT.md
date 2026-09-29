@@ -255,12 +255,15 @@ GET  /readyz                                   # 就绪探针（查库 + 存储�
 | 脚本 | 内容 | 备注 |
 |---|---|---|
 | `e2e-internal-transfer.mjs` | 29 项收发闭环（容器侧 25 项） | `--mock-ldap` 自动切/还原配置；默认不同步目录 |
-| `smoke-test.mjs` | 26 项冒烟 | 需 `--write` + 三角色账号口令 |
+| `smoke-test.mjs` | 26 项冒烟 | 需 `--write` + 三角色账号口令；`--mock-ldap` 时口令取账号名 |
 | `verify-content-type.mjs` | 26 项内容防护 | 收件人可用 `E2E_RECIPIENT_EMAIL` 环境变量回退 |
-| `test-ldap-login.mjs` | 18 项 LDAP 登录 | **zhaoliu 会触发锁定 15 分钟**，别频繁跑 |
-| `check-sha256.mjs` | 11 项流式哈希自检 | |
+| `test-ldap-login.mjs` | 15~18 项 LDAP 登录 | **zhaoliu 会触发锁定 15 分钟**，别频繁跑，且要放最后 |
+| `check-sha256.mjs` | 11 项流式哈希自检 | `npm run check:sha256`；不需要平台 |
 | `test-rekey.mjs` | 40 项密钥轮换：只读审计/计划/旧密钥错误拒绝/正式轮换+快照+复核/往返/格式契约/审计链连续性 | **不写真实数据**（建临时空库并自动清理）；`npm run test:rekey` |
-| `test-mail-notify.mjs` | 邮件通知闭环（SMTP 配置/测试发送/故障不阻断/积压补发/审批+收件通知） | 内嵌 mock SMTP（127.0.0.1:2525）；容器实例默认 `--smtp-host host.docker.internal`，本地实例传 `127.0.0.1`；结束自动还原邮件配置 |
+| `test-bootstrap.mjs` | 57 项首次部署引导：计划解析/口令文件/dry-run 不写库/bind 失败不写库/bind 成功回读/覆盖已有认证源/`--skip-verify`/锁死顺序陷阱/缺密钥与缺库 | **不写真实数据**（临时空库 + 同进程 mock LDAP）；`npm run test:bootstrap` |
+| `test-mail-notify.mjs` | 邮件通知闭环（SMTP 配置/测试发送/故障不阻断/积压补发/审批+收件通知） | 内嵌 mock SMTP（127.0.0.1:2525）；`--mock-ldap` 表示打 mock 目录实例（口令=账号名、SMTP 默认本机直连） |
+| `seed-mock-env.mjs` | 联调环境准备：认证源指向 mock LDAP + 三个角色 + 可选目录同步 | `npm run mock:prepare`；幂等，供手工回归与 CI 共用 |
+| `ci-regressions.sh` | 回归套件：依次跑上述五个平台侧专项并汇总 | `bash scripts/ci-regressions.sh`；顺序有讲究（`test-ldap-login` 必须最后），CI 与本地同一套 |
 | `mock-ldap-server.mjs` | 本地 mock LDAP | `node scripts/mock-ldap-server.mjs --port 3890`，口令=账号名 |
 | `migrate.mjs` | 迁移 CLI | `--status` 只打印已应用/待应用 |
 | `backup.mjs` | 数据库热备 + 文件增量镜像 | `--no-files` / `--keep N` / `--out DIR` |
@@ -273,6 +276,8 @@ GET  /readyz                                   # 就绪探针（查库 + 存储�
 **2026-09-24 重构后实测基线（全绿）**：
 本地 standalone —— e2e 29/29 + content-type 26/26 + smoke 26/26 + ldap-login 18/18 + sha256 11/11；
 容器（`--profile dev`，真实 openldap）—— e2e 25/25 + smoke 26/26 + backup sidecar 正常。
+**2026-09-29 新增**：bootstrap 回归 57/57（本地，不依赖平台）；`ci-regressions.sh` 在本地按 CI 步骤
+预演 5/5 全绿（e2e 29 + content-type 26 + smoke 26 + mail 13 + ldap-login 15）。
 
 ---
 
@@ -375,8 +380,12 @@ npm run docker:smoke
    （全新库里还没有 LDAP 绑定密码，回归脚本会自动写一个占位口令）。
 3. 改代码：`npm run build` → 重启（或 `npm run dev` 热更）；改 schema：走 §6 流程
    （只需 `db:generate`，不再改任何清单）。
-4. 提交前跑回归确认全绿：`npm run test:rekey`（不需要平台）+ 四套需要平台的
-   （e2e / smoke / verify-content-type / test-ldap-login）。
+4. 提交前跑回归确认全绿 —— 分两组（CI 跑的就是这两组，见 `.github/workflows/ci.yml`）：
+   - **不需要平台**：`npm run check:sha256`、`npm run test:rekey`、`npm run test:bootstrap`
+     （各自建临时空库/临时目录，随时可跑）。
+   - **需要平台**：先 `npm run mock:prepare -- --sync` 备好认证源与角色，再
+     `bash scripts/ci-regressions.sh` 一次跑完五套（e2e / 内容防护 / 冒烟 / 邮件 / 域账号登录，
+     顺序已排好 —— `test-ldap-login` 会锁账号，必须最后）。
 
 ---
 
