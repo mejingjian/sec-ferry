@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/mejingjian/sec-ferry/actions/workflows/ci.yml/badge.svg)](https://github.com/mejingjian/sec-ferry/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D22.13-339933?logo=node.js&logoColor=white)](package.json)
+[![Node](https://img.shields.io/badge/node-%3E%3D22.16-339933?logo=node.js&logoColor=white)](package.json)
 
 内网（可离线）文件安全收发审批平台：**提交文件 → 规则判定 → 审批 → 站内送达 → 收件人下载留痕**，
 全链路可审计。设计目标是「一台机器、一个进程、一个数据目录就能跑起来」，不依赖任何云服务。
@@ -16,7 +16,7 @@
 
 | 关注点 | 选型 | 说明 |
 | --- | --- | --- |
-| 运行时 | **Node.js ≥ 22.13** | 单进程标准 Node 服务器，无边缘运行时、无 workerd |
+| 运行时 | **Node.js ≥ 22.16** | 单进程标准 Node 服务器，无边缘运行时、无 workerd（下限依据见 `db/runtime.mjs`） |
 | 应用框架 | **Next.js 16（App Router）** | `output: "standalone"`，生产只需 `node server.js` |
 | 数据库 | **SQLite（Node 内置 `node:sqlite`）+ Drizzle ORM** | 零原生依赖、零 ABI 风险；库文件显式落在数据目录 |
 | 文件存储 | **本地文件系统** | 按 objectKey 落盘，保留 R2 风格接口形态（`put/get/delete/list`） |

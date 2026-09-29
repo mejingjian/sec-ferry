@@ -9,7 +9,8 @@
 
 ## 1. 前置
 
-- Node.js **≥ 22.13**（用到内置的 `node:sqlite`，无需任何原生模块编译）。
+- Node.js **≥ 22.16**（用到内置的 `node:sqlite`，无需任何原生模块编译；下限具体到 22.16 是因为
+  用到了该版本才提供的 `sqlite.backup()` 与 `setReturnArrays()` —— 依据见 `db/runtime.mjs`）。
 - 无需 Docker、无需 wrangler、无需全局包。
 
 ## 2. 两种跑法

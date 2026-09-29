@@ -23,7 +23,7 @@
     "sqlite"
   ],
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=22.16.0"
   },
   "scripts": {
     "dev": "next dev -p 8787",

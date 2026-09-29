@@ -13,6 +13,7 @@
 // 容器里由 docker/entrypoint-platform.sh 在「迁移之后、启动服务之前」调用。
 
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { NODE_MIN, nodeVersionOk } from "../db/runtime.mjs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -30,7 +31,20 @@ const notes = [];
 const err = (title, detail, fix) => errors.push({ title, detail, fix });
 const warn = (title, detail, fix) => warnings.push({ title, detail, fix });
 
-// ---------- 1) 加密密钥 ----------
+// ---------- 1) 运行时版本 ----------
+// 放在最前面：版本不满足时，后面的检查会以各种奇怪的方式失败（模块链接期或调用期报错），
+// 不如先失败在一句能照着做的提示上。下限依据见 db/runtime.mjs。
+if (!nodeVersionOk()) {
+  err(
+    `Node.js 版本过低（当前 ${process.versions.node}，要求 >= ${NODE_MIN}）`,
+    "本项目使用 node:sqlite 的 sqlite.backup() 与 statement.setReturnArrays()，二者自 Node 22.16.0 起提供；" +
+      "版本过低时的症状是模块链接或调用期的奇怪报错，而不是功能降级。",
+    `升级 Node（例如 nvm install ${NODE_MIN}），或改用容器部署（镜像已固定合适的运行时）。`,
+  );
+} else {
+  notes.push(`Node.js ${process.versions.node}（要求 >= ${NODE_MIN}）`);
+}
+// ---------- 2) 加密密钥 ----------
 const key = (process.env.CONFIG_ENCRYPTION_KEY || "").trim();
 if (!key) {
   err(
@@ -54,7 +68,7 @@ if (!key) {
   notes.push(`加密密钥已配置（${key.length} 字符）`);
 }
 
-// ---------- 2) 数据目录可写 ----------
+// ---------- 3) 数据目录可写 ----------
 // ⚠️ 不能检查 DATA_DIR 本身。在「只读根文件系统 + 三个卷分别挂到子目录」的部署下
 //    （本项目的容器就是这样），DATA_DIR（/data）**本身就是只读的**，可写的是它下面
 //    的 db / files / backups 三个卷。/data 上 touch 会直接得到 EROFS。
@@ -89,7 +103,7 @@ for (const [label, dir] of writableTargets) {
   }
 }
 
-// ---------- 3) 登录路径（最容易把运维锁死的地方）----------
+// ---------- 4) 登录路径（最容易把运维锁死的地方）----------
 const adminEmails = (process.env.PLATFORM_ADMIN_EMAILS || "")
   .split(",")
   .map((s) => s.trim())

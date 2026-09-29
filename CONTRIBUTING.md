@@ -5,7 +5,8 @@
 
 ## 环境
 
-- Node.js **≥ 22.13**（项目直接使用内置 `node:sqlite`，无需原生模块编译）
+- Node.js **≥ 22.16**（用的是内置 `node:sqlite`，无需任何原生模块编译；下限具体到 22.16 是因为
+  用到了该版本才提供的 `sqlite.backup()` 与 `statement.setReturnArrays()` —— 依据见 `db/runtime.mjs`）
 - npm（仓库锁定 `package-lock.json`，请用 `npm install` / `npm ci`）
 - Windows / Linux / macOS 均可开发；**容器部署**见 `DOCKER-DEPLOYMENT.md`
 

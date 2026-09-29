@@ -37,7 +37,7 @@ Node 服务器（Next.js 16 standalone 的 server.js，单进程）
 
 | 层 | 技术 | 版本 |
 |---|---|---|
-| 运行时 | **Node.js**（单进程标准 HTTP 服务器） | ≥ 22.13（`node:sqlite` 需要 22.5+） |
+| 运行时 | **Node.js**（单进程标准 HTTP 服务器） | ≥ 22.16（`node:sqlite` 自 22.5 提供、22.13 起免 `--experimental-sqlite`；但本项目用到的 `sqlite.backup()` / `setReturnArrays()` 自 **22.16** 才有 —— 依据见 `db/runtime.mjs`） |
 | 框架 | Next.js（App Router, RSC），`output: "standalone"` | 16.3.4 |
 | 构建 | Next 内置 Turbopack | — |
 | ORM | Drizzle ORM + drizzle-kit | 0.45.2 / 0.31.10 |
@@ -335,6 +335,14 @@ npm run docker:smoke
    改依赖后跑 `npm install --package-lock-only`。
 6. `node:sqlite` 是 Node 的实验特性（启动会打印 `ExperimentalWarning`），属预期；用法集中在
    `db/sqlite-client.mjs` 一处，将来 API 变动只需改它。
+   **⚠️ 版本下限是 Node 22.16，不是 22.13**：`node:sqlite` 本身自 22.5 提供、22.13 起免
+   `--experimental-sqlite` 标志，但本项目用到的 `sqlite.backup()` 与 `statement.setReturnArrays()`
+   自 **22.16.0** 才提供。低于它的症状不是「功能降级」而是直接崩：前者是**模块链接期**报
+   「does not provide an export named 'backup'」，后者是 `TypeError: ... is not a function`。
+   2026-09-29 首次推送 GitHub 时 CI 就是被这一点绊倒的 —— ci.yml 当时锁 22.13，而本地开发机（22.22）
+   与镜像基础（node:22 最新补丁）都高于下限，**本地全绿掩盖了它**，只有 CI 守着下限才暴露出来。
+   下限的单一真相是 `db/runtime.mjs`（另见 `scripts/preflight.mjs` 第 1 项与 `.npmrc` 的 engine-strict），
+   调整它之前先想清楚。
 
 **通用**：
 

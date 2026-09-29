@@ -17,7 +17,15 @@ import { closeSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, op
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { backup, DatabaseSync } from "node:sqlite";
+import * as nodeSqlite from "node:sqlite";
+import { assertNodeVersion } from "../db/runtime.mjs";
+
+// 刻意用命名空间导入，而不是 `import { backup } from "node:sqlite"`：
+// 后者在 Node < 22.16 上是**模块链接期**直接失败的（该版本没有名为 backup 的导出），
+// 报错只有一句 ESM 语法错，完全看不出「Node 版本太低」。这里先断言版本再取用，
+// 失败时给出可执行的提示（下限依据见 db/runtime.mjs）。
+assertNodeVersion("数据库备份");
+const { backup, DatabaseSync } = nodeSqlite;
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 

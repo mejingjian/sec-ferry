@@ -9,6 +9,8 @@
 //   1. 它是原生模块，需要按平台/ABI 准备预编译二进制 —— 开发机是 Windows、生产是 Linux 容器，
 //      两处都要能装上；本项目所处的网络环境对二进制下载并不稳定。
 //   2. `node:sqlite` 是 Node 22.5+ 内置能力，零安装、零 ABI 风险，容器与开发机行为一致。
+//      （注意：本项目真正要求的是 Node >= 22.16，因为用到了 22.16 才有的 `setReturnArrays`
+//        与 `sqlite.backup()` —— 下限的完整依据见 db/runtime.mjs。）
 //
 // 适配点只有一处：`node:sqlite` 默认把结果集映射成对象，而 Drizzle 的 better-sqlite3 驱动
 // 在需要按列顺序取值时调用 `stmt.raw()` 拿数组。`node:sqlite` 的 `setReturnArrays(true)`
@@ -21,6 +23,11 @@
 //    若将来该特性有破坏性变更，只需改本文件。
 
 import { DatabaseSync } from "node:sqlite";
+import { assertNodeVersion } from "./runtime.mjs";
+
+// 版本闸门放在最前面：低于下限时 `setReturnArrays` 会以 TypeError 的形式炸在深处，
+// 在这里换成一句能照着做的提示（下限依据见 db/runtime.mjs）。
+assertNodeVersion("SQLite 客户端");
 
 /**
  * @typedef {object} RunResult

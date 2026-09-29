@@ -22,7 +22,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22.13"
+          # 锁定在**最低支持版本**上跑（见 db/runtime.mjs）：CI 的一个价值就是守住下限。
+          # 别往下调 —— 代码用到 Node 22.16 才有的 sqlite.backup() / setReturnArrays()。
+          node-version: "22.16"
           cache: npm
 
       - name: 安装依赖
@@ -62,7 +64,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22.13"
+          # 锁定在**最低支持版本**上跑（见 db/runtime.mjs）：CI 的一个价值就是守住下限。
+          # 别往下调 —— 代码用到 Node 22.16 才有的 sqlite.backup() / setReturnArrays()。
+          node-version: "22.16"
           cache: npm
 
       - name: 安装依赖
